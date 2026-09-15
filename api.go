@@ -11,10 +11,11 @@ import (
 
 const service = "moodle_mobile_app"
 
-type Client struct {
-	site  string
+type MoodleClient struct {
+	host  string
 	token string
 	http  *http.Client
+	user  *User
 }
 
 type moodleError struct {
@@ -27,8 +28,44 @@ func (e *moodleError) Error() string {
 	return fmt.Sprintf("moodle: %s: %s", e.ErrorCode, e.Message)
 }
 
-func Login(site, username, password string) (string, error) {
-	resp, err := http.PostForm(site+"/login/token.php", url.Values{
+// New constructs a Client for the given Moodle base URL. Call Login to
+// authenticate before making any other requests.
+func New(host string) *MoodleClient {
+	return &MoodleClient{
+		host: host,
+		http: &http.Client{},
+	}
+}
+
+// Login authenticates with the given credentials and stores the resulting
+// token and user on the client, returning an error if authentication fails.
+func (c *MoodleClient) Login(username, password string) error {
+	token, err := c.requestToken(username, password)
+	if err != nil {
+		return err
+	}
+	c.token = token
+
+	user, err := c.GetUserByUsername(username)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return fmt.Errorf("moodle: user %q not found", username)
+	}
+	c.user = user
+
+	return nil
+}
+
+// User returns the currently connected user, or nil if Login has not
+// been called successfully yet.
+func (c *MoodleClient) User() *User {
+	return c.user
+}
+
+func (c *MoodleClient) requestToken(username, password string) (string, error) {
+	resp, err := c.http.PostForm(c.host+"/login/token.php", url.Values{
 		"username": {username},
 		"password": {password},
 		"service":  {service},
@@ -59,15 +96,7 @@ func Login(site, username, password string) (string, error) {
 	return result.Token, nil
 }
 
-func New(site, token string) *Client {
-	return &Client{
-		site:  site,
-		token: token,
-		http:  &http.Client{},
-	}
-}
-
-func (c *Client) call(fn string, params url.Values) ([]byte, error) {
+func (c *MoodleClient) call(fn string, params url.Values) ([]byte, error) {
 	if params == nil {
 		params = url.Values{}
 	}
@@ -76,7 +105,7 @@ func (c *Client) call(fn string, params url.Values) ([]byte, error) {
 	params.Set("wsfunction", fn)
 	params.Set("moodlewsrestformat", "json")
 
-	resp, err := c.http.PostForm(c.site+"/webservice/rest/server.php", params)
+	resp, err := c.http.PostForm(c.host+"/webservice/rest/server.php", params)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", fn, err)
 	}
@@ -110,7 +139,7 @@ type User struct {
 	Confirmed  bool   `json:"confirmed"`
 }
 
-func (c *Client) GetUserByUsername(username string) (*User, error) {
+func (c *MoodleClient) GetUserByUsername(username string) (*User, error) {
 	params := url.Values{}
 	params.Set("field", "username")
 	params.Set("values[0]", username)
@@ -133,12 +162,64 @@ func (c *Client) GetUserByUsername(username string) (*User, error) {
 }
 
 type Course struct {
-	ID int `json:"id"`
+	ID                       int       `json:"id"`
+	ShortName                string    `json:"shortname"`
+	FullName                 string    `json:"fullname"`
+	DisplayName              string    `json:"displayname"`
+	IDNumber                 string    `json:"idnumber"`
+	Visible                  int       `json:"visible"`
+	Summary                  string    `json:"summary"`
+	SummaryFormat            int       `json:"summaryformat"`
+	Format                   string    `json:"format"`
+	ShowGrades               bool      `json:"showgrades"`
+	Lang                     string    `json:"lang"`
+	EnableCompletion         bool      `json:"enablecompletion"`
+	Category                 int       `json:"category"`
+	Progress                 *float64  `json:"progress"`
+	StartDate                int64     `json:"startdate"`
+	EndDate                  int64     `json:"enddate"`
+	Marker                   int       `json:"marker"`
+	LastAccess               int64     `json:"lastaccess"`
+	IsFavourite              bool      `json:"isfavourite"`
+	Hidden                   bool      `json:"hidden"`
+	ShowActivityDates        bool      `json:"showactivitydates"`
+	ShowCompletionConditions bool      `json:"showcompletionconditions"`
+	TimeModified             int64     `json:"timemodified"`
+	Sections                 []Section `json:"sections"`
 }
 
-func (c *Client) GetUserCourses(userID int) ([]Course, error) {
+type ModuleContent struct {
+	Type         string `json:"type"`
+	FileName     string `json:"filename"`
+	FilePath     string `json:"filepath"`
+	FileURL      string `json:"fileurl"`
+	FileSize     int64  `json:"filesize"`
+	TimeModified int64  `json:"timemodified"`
+}
+
+type Module struct {
+	ID       int             `json:"id"`
+	Name     string          `json:"name"`
+	ModName  string          `json:"modname"`
+	Contents []ModuleContent `json:"contents,omitempty"`
+}
+
+type Section struct {
+	ID      int      `json:"id"`
+	Name    string   `json:"name"`
+	Summary string   `json:"summary"`
+	Section int      `json:"section"`
+	Visible bool     `json:"uservisible"`
+	Modules []Module `json:"modules"`
+}
+
+func (c *MoodleClient) GetUserCourses() ([]Course, error) {
+	if c.user == nil {
+		return nil, fmt.Errorf("moodle: not connected")
+	}
+
 	params := url.Values{}
-	params.Set("userid", strconv.Itoa(userID))
+	params.Set("userid", strconv.Itoa(c.user.ID))
 
 	body, err := c.call("core_enrol_get_users_courses", params)
 	if err != nil {
@@ -150,5 +231,30 @@ func (c *Client) GetUserCourses(userID int) ([]Course, error) {
 		return nil, fmt.Errorf("courses: bad json: %w\n%s", err, string(body))
 	}
 
+	for i := range courses {
+		sections, err := c.GetCourseSections(courses[i].ID)
+		if err != nil {
+			return nil, fmt.Errorf("course %d: %w", courses[i].ID, err)
+		}
+		courses[i].Sections = sections
+	}
+
 	return courses, nil
+}
+
+func (c *MoodleClient) GetCourseSections(courseID int) ([]Section, error) {
+	params := url.Values{}
+	params.Set("courseid", strconv.Itoa(courseID))
+
+	body, err := c.call("core_course_get_contents", params)
+	if err != nil {
+		return nil, err
+	}
+
+	var sections []Section
+	if err := json.Unmarshal(body, &sections); err != nil {
+		return nil, fmt.Errorf("course sections: bad json: %w\n%s", err, string(body))
+	}
+
+	return sections, nil
 }
