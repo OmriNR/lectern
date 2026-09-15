@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 const service = "moodle_mobile_app"
@@ -62,6 +63,18 @@ func (c *MoodleClient) Login(username, password string) error {
 // been called successfully yet.
 func (c *MoodleClient) User() *User {
 	return c.user
+}
+
+// Host returns the Moodle base URL this client talks to.
+func (c *MoodleClient) Host() string {
+	return c.host
+}
+
+// RestoreSession sets the token and user on the client without going
+// through Login, e.g. when restoring a session saved in the local config.
+func (c *MoodleClient) RestoreSession(token string, user *User) {
+	c.token = token
+	c.user = user
 }
 
 func (c *MoodleClient) requestToken(username, password string) (string, error) {
@@ -142,7 +155,10 @@ type User struct {
 func (c *MoodleClient) GetUserByUsername(username string) (*User, error) {
 	params := url.Values{}
 	params.Set("field", "username")
-	params.Set("values[0]", username)
+	// Moodle usernames are canonically lowercase: login/token.php accepts
+	// any case, but core_user_get_users_by_field's parameter validation
+	// rejects a non-lowercase value outright.
+	params.Set("values[0]", strings.ToLower(username))
 
 	body, err := c.call("core_user_get_users_by_field", params)
 	if err != nil {
