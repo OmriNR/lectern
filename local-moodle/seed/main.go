@@ -40,6 +40,15 @@ type assignment struct {
 	FileContentBase64        string `json:"filecontentbase64"`
 }
 
+// resource is a mod_resource ("File") activity: a single downloadable file,
+// used to seed the non-page, non-assignment file types (pdf, slides, code,
+// video) that core_course_get_contents exposes directly.
+type resource struct {
+	Name              string `json:"name"`
+	FileName          string `json:"filename"`
+	FileContentBase64 string `json:"filecontentbase64"`
+}
+
 type course struct {
 	ShortName   string       `json:"shortname"`
 	FullName    string       `json:"fullname"`
@@ -47,6 +56,7 @@ type course struct {
 	StartDate   int64        `json:"startdate"`
 	Lectures    []lecture    `json:"lectures"`
 	Assignments []assignment `json:"assignments"`
+	Resources   []resource   `json:"resources"`
 }
 
 type category struct {
@@ -105,6 +115,76 @@ func makeAssignment(courseShortName, name, instructions string) assignment {
 	}
 }
 
+// minimalPDF returns a bare-bones but valid single-page PDF containing the
+// given title text.
+func minimalPDF(title string) []byte {
+	return []byte(fmt.Sprintf(`%%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 150]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj
+4 0 obj<</Length 58>>
+stream
+BT /F1 14 Tf 20 100 Td (%s) Tj ET
+endstream
+endobj
+5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
+trailer<</Size 6/Root 1 0 R>>
+%%%%EOF
+`, title))
+}
+
+// mockPresentation returns placeholder slide-deck content. It isn't a real
+// OOXML .pptx (not worth the complexity for mock data) - it just exercises
+// the download path for that file type.
+func mockPresentation(title string) []byte {
+	return []byte(fmt.Sprintf("Mock presentation: %s\n\n(placeholder content for testing file downloads)\n", title))
+}
+
+// mockPythonScript returns a small, genuinely valid Python script.
+func mockPythonScript(title string) []byte {
+	return []byte(fmt.Sprintf(`"""%s - mock script for lectern installation testing."""
+
+
+def greet(name: str) -> str:
+    return f"Hello, {name}!"
+
+
+if __name__ == "__main__":
+    print(greet("world"))
+`, title))
+}
+
+// mockMP4 returns non-text binary placeholder content, useful for
+// exercising the download path's handling of binary (not just text) files.
+func mockMP4() []byte {
+	data := make([]byte, 2048)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+	return data
+}
+
+func makeResourceFile(courseShortName, name, filename string, content []byte) resource {
+	fname := strings.ReplaceAll(fmt.Sprintf("%s_%s", courseShortName, filename), " ", "_")
+	return resource{
+		Name:              name,
+		FileName:          fname,
+		FileContentBase64: base64.StdEncoding.EncodeToString(content),
+	}
+}
+
+// makeCourseResources returns one mock file per type we want lectern's
+// download path exercised against: a pdf, a presentation, a Python source
+// file, and a video.
+func makeCourseResources(courseShortName string) []resource {
+	return []resource{
+		makeResourceFile(courseShortName, "Course Slides", "slides.pptx", mockPresentation(courseShortName+" - Course Slides")),
+		makeResourceFile(courseShortName, "Reading Material", "reading.pdf", minimalPDF(courseShortName+" Reading Material")),
+		makeResourceFile(courseShortName, "Example Script", "example.py", mockPythonScript(courseShortName+" Example Script")),
+		makeResourceFile(courseShortName, "Lecture Recording", "recording.mp4", mockMP4()),
+	}
+}
+
 func buildSpec() spec {
 	return spec{
 		Majors: []major{
@@ -128,6 +208,7 @@ func buildSpec() spec {
 									makeAssignment("CS101", "Homework 1: Basic Syntax", "Write short programs demonstrating variables, conditionals, and loops."),
 									makeAssignment("CS101", "Homework 2: Functions", "Implement a set of functions solving the given problems."),
 								},
+								Resources: makeCourseResources("CS101"),
 							},
 						},
 					},
@@ -147,6 +228,7 @@ func buildSpec() spec {
 									makeAssignment("CS201", "Assignment 1: Implement a Linked List", "Implement a singly linked list with insert/delete/search."),
 									makeAssignment("CS201", "Assignment 2: Sorting Algorithms", "Implement and compare quicksort and mergesort."),
 								},
+								Resources: makeCourseResources("CS201"),
 							},
 						},
 					},
@@ -171,6 +253,7 @@ func buildSpec() spec {
 									makeAssignment("MATH101", "Problem Set 1: Limits", "Evaluate the given limits, showing all steps."),
 									makeAssignment("MATH101", "Problem Set 2: Derivatives", "Differentiate the given functions."),
 								},
+								Resources: makeCourseResources("MATH101"),
 							},
 						},
 					},
@@ -188,6 +271,7 @@ func buildSpec() spec {
 								Assignments: []assignment{
 									makeAssignment("MATH201", "Problem Set 1: Matrix Operations", "Perform the given matrix operations by hand."),
 								},
+								Resources: makeCourseResources("MATH201"),
 							},
 						},
 					},
@@ -212,6 +296,7 @@ func buildSpec() spec {
 									makeAssignment("PHYS101", "Problem Set 1: Kinematics", "Solve the given kinematics problems."),
 									makeAssignment("PHYS101", "Problem Set 2: Forces", "Apply Newton's laws to the given scenarios."),
 								},
+								Resources: makeCourseResources("PHYS101"),
 							},
 						},
 					},
@@ -236,6 +321,7 @@ func buildSpec() spec {
 									makeAssignment("PSYCH101", "Essay 1: Theories of Development", "Compare two major theories of childhood development."),
 									makeAssignment("PSYCH101", "Essay 2: Cognitive Biases", "Describe three cognitive biases with real-world examples."),
 								},
+								Resources: makeCourseResources("PSYCH101"),
 							},
 						},
 					},
@@ -260,6 +346,7 @@ func buildSpec() spec {
 									makeAssignment("POLSCI101", "Essay 1: Compare Two Political Systems", "Compare the political systems of two countries of your choice."),
 									makeAssignment("POLSCI101", "Essay 2: Ideology Analysis", "Analyze a political speech for its underlying ideology."),
 								},
+								Resources: makeCourseResources("POLSCI101"),
 							},
 						},
 					},
@@ -284,6 +371,7 @@ func buildSpec() spec {
 									makeAssignment("COMM101", "Assignment 1: Media Analysis", "Analyze how a current news story is framed differently across outlets."),
 									makeAssignment("COMM101", "Assignment 2: Speech Outline", "Prepare an outline for a five-minute persuasive speech."),
 								},
+								Resources: makeCourseResources("COMM101"),
 							},
 						},
 					},
@@ -308,6 +396,7 @@ func buildSpec() spec {
 									makeAssignment("ECON101", "Problem Set 1: Supply and Demand", "Solve the given supply-and-demand problems."),
 									makeAssignment("ECON101", "Problem Set 2: Market Structures", "Compare outcomes under competition vs. monopoly."),
 								},
+								Resources: makeCourseResources("ECON101"),
 							},
 						},
 					},
@@ -332,6 +421,7 @@ func buildSpec() spec {
 									makeAssignment("HIST101", "Essay 1: Compare Two Ancient Civilizations", "Compare the political structures of two ancient civilizations."),
 									makeAssignment("HIST101", "Essay 2: Legacy of a Classical Empire", "Discuss the lasting legacy of one classical empire."),
 								},
+								Resources: makeCourseResources("HIST101"),
 							},
 						},
 					},

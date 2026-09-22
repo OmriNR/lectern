@@ -154,7 +154,7 @@ func (c *CLI) handleClone(args []string) {
 		return
 	}
 
-	if err := c.workspace.InitWorkspace(targetDir, courses); err != nil {
+	if err := c.workspace.InitWorkspace(targetDir, courses, c.client); err != nil {
 		fmt.Printf("Error setting up workspace: %v\n", err)
 		return
 	}

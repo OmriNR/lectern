@@ -34,6 +34,56 @@ $admin = $DB->get_record('user', ['username' => 'admin'], '*', MUST_EXIST);
 $generator = new testing_data_generator();
 $fs = get_file_storage();
 
+// Adds any resources from $coursespec not yet present (matched by name) in
+// an already-existing course, so re-running the seed after adding new mock
+// resources doesn't require wiping the whole instance. Returns the count
+// added.
+function seed_add_missing_resources($course, $coursespec, $generator, $fs) {
+    global $DB;
+
+    $existingnames = $DB->get_fieldset_sql(
+        'SELECT r.name FROM {resource} r WHERE r.course = ?',
+        [$course->id]
+    );
+
+    $section = (int) $DB->get_field_sql(
+        'SELECT MAX(section) FROM {course_sections} WHERE course = ?',
+        [$course->id]
+    ) + 1;
+
+    $added = 0;
+    foreach ($coursespec['resources'] as $resource) {
+        if (in_array($resource['name'], $existingnames, true)) {
+            continue;
+        }
+
+        $moduleinfo = $generator->create_module('resource', [
+            'course' => $course->id,
+            'name' => $resource['name'],
+            'section' => $section,
+        ]);
+
+        $context = context_module::instance($moduleinfo->cmid);
+        $fs->delete_area_files($context->id, 'mod_resource', 'content', 0);
+
+        $filecontent = base64_decode($resource['filecontentbase64']);
+        $fs->create_file_from_string([
+            'component' => 'mod_resource',
+            'filearea' => 'content',
+            'contextid' => $context->id,
+            'itemid' => 0,
+            'filename' => $resource['filename'],
+            'filepath' => '/',
+        ], $filecontent);
+
+        echo "      Resource: {$resource['name']} (file: {$resource['filename']})\n";
+        $section++;
+        $added++;
+    }
+
+    return $added;
+}
+
 foreach ($spec['majors'] as $majorspec) {
     $existing = $DB->get_record('course_categories', ['name' => $majorspec['name'], 'parent' => 0]);
     if ($existing) {
@@ -60,7 +110,8 @@ foreach ($spec['majors'] as $majorspec) {
         foreach ($catspec['courses'] as $coursespec) {
             $existingcourse = $DB->get_record('course', ['shortname' => $coursespec['shortname']]);
             if ($existingcourse) {
-                echo "    Course: {$coursespec['fullname']} ({$coursespec['shortname']}, id {$existingcourse->id}, already exists - skipping content)\n";
+                echo "    Course: {$coursespec['fullname']} ({$coursespec['shortname']}, id {$existingcourse->id}, already exists)\n";
+                seed_add_missing_resources($existingcourse, $coursespec, $generator, $fs);
                 continue;
             }
 
@@ -110,6 +161,32 @@ foreach ($spec['majors'] as $majorspec) {
                 ], $filecontent);
 
                 echo "      Assign: {$assignment['name']} (file: {$assignment['filename']})\n";
+                $section++;
+            }
+
+            foreach ($coursespec['resources'] as $resource) {
+                $moduleinfo = $generator->create_module('resource', [
+                    'course' => $course->id,
+                    'name' => $resource['name'],
+                    'section' => $section,
+                ]);
+
+                $context = context_module::instance($moduleinfo->cmid);
+                // the resource generator attaches its own placeholder file;
+                // clear it out so only our mock file remains.
+                $fs->delete_area_files($context->id, 'mod_resource', 'content', 0);
+
+                $filecontent = base64_decode($resource['filecontentbase64']);
+                $fs->create_file_from_string([
+                    'component' => 'mod_resource',
+                    'filearea' => 'content',
+                    'contextid' => $context->id,
+                    'itemid' => 0,
+                    'filename' => $resource['filename'],
+                    'filepath' => '/',
+                ], $filecontent);
+
+                echo "      Resource: {$resource['name']} (file: {$resource['filename']})\n";
                 $section++;
             }
         }

@@ -272,5 +272,110 @@ func (c *MoodleClient) GetCourseSections(courseID int) ([]Section, error) {
 		return nil, fmt.Errorf("course sections: bad json: %w\n%s", err, string(body))
 	}
 
+	// core_course_get_contents doesn't expose mod_assign intro attachments
+	// (unlike page/resource/folder, assign has no "contents" of its own) -
+	// fetch them separately and splice them into the matching module.
+	attachmentsByModuleID, err := c.getAssignmentIntroAttachments(courseID)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range sections {
+		for j := range sections[i].Modules {
+			mod := &sections[i].Modules[j]
+			if mod.ModName != "assign" {
+				continue
+			}
+			if attachments, ok := attachmentsByModuleID[mod.ID]; ok {
+				mod.Contents = attachments
+			}
+		}
+	}
+
 	return sections, nil
+}
+
+// getAssignmentIntroAttachments returns, per course-module ID, the files
+// attached to an assignment's description (mod_assign_get_assignments is
+// the only web service that exposes these).
+func (c *MoodleClient) getAssignmentIntroAttachments(courseID int) (map[int][]ModuleContent, error) {
+	params := url.Values{}
+	params.Set("courseids[0]", strconv.Itoa(courseID))
+
+	body, err := c.call("mod_assign_get_assignments", params)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Courses []struct {
+			Assignments []struct {
+				CMID             int             `json:"cmid"`
+				IntroAttachments []ModuleContent `json:"introattachments"`
+			} `json:"assignments"`
+		} `json:"courses"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("assignments: bad json: %w\n%s", err, string(body))
+	}
+
+	byModuleID := make(map[int][]ModuleContent)
+	for _, course := range resp.Courses {
+		for _, a := range course.Assignments {
+			byModuleID[a.CMID] = a.IntroAttachments
+		}
+	}
+
+	return byModuleID, nil
+}
+
+// DownloadFile fetches the raw content of a Moodle file URL (e.g. a
+// ModuleContent.FileURL), authenticating with the client's token.
+func (c *MoodleClient) DownloadFile(fileURL string) ([]byte, error) {
+	u, err := url.Parse(fileURL)
+	if err != nil {
+		return nil, fmt.Errorf("download: bad file url %q: %w", fileURL, err)
+	}
+
+	q := u.Query()
+	q.Set("token", c.token)
+	u.RawQuery = q.Encode()
+
+	resp, err := c.http.Get(u.String())
+	if err != nil {
+		return nil, fmt.Errorf("download %s: %w", fileURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download %s: unexpected status %s", fileURL, resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("download %s: reading body: %w", fileURL, err)
+	}
+
+	return body, nil
+}
+
+// syntheticContentName is the filename Moodle's mod_page always uses for
+// the auto-generated file that mirrors a page's HTML body (see
+// page_export_contents() in mod/page/lib.php). It isn't a real uploaded
+// file, so it's excluded - but real files attached within a page (or any
+// other module) keep their own filenames and are still included.
+const syntheticContentName = "index.html"
+
+func (s Section) GetFiles() []ModuleContent {
+	var files []ModuleContent
+
+	for _, mod := range s.Modules {
+		for _, content := range mod.Contents {
+			if content.FileURL == "" || content.FileName == syntheticContentName {
+				continue
+			}
+			files = append(files, content)
+		}
+	}
+	return files
 }
