@@ -72,6 +72,8 @@ func (c *CLI) dispatch(args []string) int {
 		c.handleConfig(args[1:])
 	case "update":
 		c.handleShellUpdate()
+	case "ez":
+		c.handleEZ()
 	case "help", "--help", "-h":
 		c.printHelp()
 	default:
@@ -245,6 +247,12 @@ func (c *CLI) handleShellUpdate() {
 	}
 }
 
+func (c *CLI) handleEZ() {
+	if err := runEZ(c); err != nil {
+		fmt.Printf("Error running easy menu: %v\n", err)
+	}
+}
+
 func (c *CLI) printHelp() {
 	fmt.Println("usage: lectern <command> [<args>]")
 	fmt.Println()
@@ -254,6 +262,7 @@ func (c *CLI) printHelp() {
 	fmt.Println("  status       - check status of the local workspace")
 	fmt.Println("  config check - print what's saved in the local config file")
 	fmt.Println("  config clear - clear the local config file")
+	fmt.Println("  ez           - opens the easy menu (for users that are not used to terminal commands)")
 	fmt.Println("  help         - Show this help")
 	fmt.Println("  update       - Install/Update lectern")
 	fmt.Println("  exit         - Exit lectern (interactive mode only)")
