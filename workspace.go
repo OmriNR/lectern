@@ -34,6 +34,12 @@ func NewWorkspaceManager() *WorkspaceManager {
 	return  &WorkspaceManager{}
 }
 
+// FileDownloader fetches the raw content of a Moodle file URL. MoodleClient
+// satisfies this interface.
+type FileDownloader interface {
+	DownloadFile(fileURL string) ([]byte, error)
+}
+
 func (w *WorkspaceManager) SanitizeName (name string) string {
 	name = strings.TrimSpace(name)
 
@@ -48,7 +54,7 @@ func (w *WorkspaceManager) SanitizeName (name string) string {
 	return clean
 }
 
-func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course) error {
+func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, downloader FileDownloader) error {
 
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return fmt.Errorf("Failed creating dest folder: %w", err)
@@ -64,9 +70,7 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course) err
 		Files: make(map[int]FileState),
 	}
 
-	if err := w.SaveState(targetDir, &initialState); err != nil {
-		return fmt.Errorf("Failed initial setup: %w", err)
-	}
+	nextFileID := 1
 
 	for _, course := range courses {
 		courseFolder := w.SanitizeName(course.DisplayName)
@@ -92,7 +96,35 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course) err
 			}
 
 			fmt.Printf("└── %s\n", secFolder)
+
+			for _, file := range sec.GetFiles() {
+				fileName := w.SanitizeName(file.FileName)
+				filePath := filepath.Join(secPath, fileName)
+
+				data, err := downloader.DownloadFile(file.FileURL)
+				if err != nil {
+					return fmt.Errorf("Failed downloading file %s: %w", file.FileName, err)
+				}
+
+				if err := os.WriteFile(filePath, data, 0644); err != nil {
+					return fmt.Errorf("Failed writing file %s: %w", file.FileName, err)
+				}
+
+				initialState.Files[nextFileID] = FileState{
+					ID:           nextFileID,
+					Name:         file.FileName,
+					TimeModified: file.TimeModified,
+					Path:         filePath,
+				}
+				nextFileID++
+
+				fmt.Printf("    - %s\n", fileName)
+			}
 		}
+	}
+
+	if err := w.SaveState(targetDir, &initialState); err != nil {
+		return fmt.Errorf("Failed saving workspace state: %w", err)
 	}
 
 	return nil
