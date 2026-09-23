@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"golang.org/x/term"
 )
@@ -73,6 +75,9 @@ func (c *CLI) dispatch(args []string) int {
 	case "update":
 		c.handleShellUpdate()
 	case "ez":
+		if !c.requireConnected() {
+			return 1
+		}
 		c.handleEZ()
 	case "help", "--help", "-h":
 		c.printHelp()
@@ -185,9 +190,73 @@ func (c *CLI) handleStatus() {
 		return
 	}
 
-	fmt.Printf("Workspace location: %s\n", root)
-	fmt.Printf("Last sync: %s\n", state.LastSync.Format("2006-01-02 15:04:05"))
-	fmt.Printf("Number of files: %+v\n", len(state.Files))
+	fmt.Printf("%-12s%s\n", "Workspace", root)
+	fmt.Printf("%-12s%s (%s)\n", "Last sync", state.LastSync.Format("2006-01-02 15:04"), humanAgo(state.LastSync))
+	fmt.Printf("%-12s%d across %d courses\n", "Files", len(state.Files), len(state.Courses))
+
+	for _, course := range state.Courses {
+		fmt.Println()
+
+		title := course.DisplayName
+		if course.ShortName != "" {
+			title = fmt.Sprintf("%s — %s", course.ShortName, course.DisplayName)
+		}
+		fmt.Println(title)
+
+		var names []string
+		for _, f := range state.Files {
+			if f.CourseID == course.ID {
+				names = append(names, filepath.Base(f.Path))
+			}
+		}
+		sort.Strings(names)
+
+		fmt.Printf("  %-11s%s\n", "location", course.Path)
+		fmt.Printf("  %-11s%d\n", "sections", course.Sections)
+		fmt.Printf("  %-11s%d\n", "files", len(names))
+		printFileColumns(names, 2)
+	}
+}
+
+func humanAgo(t time.Time) string {
+	d := time.Since(t)
+
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
+func printFileColumns(names []string, cols int) {
+	if len(names) == 0 {
+		return
+	}
+
+	maxLen := 0
+	for _, n := range names {
+		if len(n) > maxLen {
+			maxLen = len(n)
+		}
+	}
+	colWidth := maxLen + 3
+
+	for i := 0; i < len(names); i += cols {
+		fmt.Print("    ")
+		for j := i; j < i+cols && j < len(names); j++ {
+			if j == len(names)-1 || j == i+cols-1 {
+				fmt.Print(names[j])
+			} else {
+				fmt.Printf("%-*s", colWidth, names[j])
+			}
+		}
+		fmt.Println()
+	}
 }
 
 func (c *CLI) handleConfig(args []string) {
