@@ -7,41 +7,53 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	MetaDirName = ".moodle"
+	MetaDirName   = ".moodle"
 	StateFIleName = "state.json"
+
+	// StateVersion is bumped whenever the state.json layout changes.
+	StateVersion = 2
 )
 
 type FileState struct {
-	ID 				int 	`json:"id"`
-	Name 			string 	`json:"name"`
-	TimeModified	int64	`json:"time_modified"`
-	Path 			string	`json:"path"`
-	CourseID		int		`json:"course_id"`
+	ID           int    `json:"id"`
+	Name         string `json:"name"`
+	TimeModified int64  `json:"time_modified"`
+	ModuleID     int64  `json:"module_id"`
+	Path         string `json:"path"`
+}
+
+type SectionState struct {
+	ID     int                  `json:"id"`
+	Number int64                `json:"number"`
+	Name   string               `json:"name"`
+	Folder string               `json:"folder"`
+	Files  map[string]FileState `json:"files"`
 }
 
 type CourseState struct {
-	ID          int    `json:"id"`
-	ShortName   string `json:"short_name"`
-	DisplayName string `json:"display_name"`
-	Path        string `json:"path"`
-	Sections    int    `json:"sections"`
+	ID          int                     `json:"id"`
+	ShortName   string                  `json:"short_name"`
+	DisplayName string                  `json:"display_name"`
+	Path        string                  `json:"path"`
+	Sections    map[string]SectionState `json:"sections"`
 }
 
 type WorkspaceState struct {
-	LastSync	time.Time			`json:"last_sync"`
-	Files 		map[int]FileState	`json:"files"`
-	Courses		[]CourseState		`json:"courses"`
+	LastSync time.Time           `json:"last_sync"`
+	Courses  map[int]CourseState `json:"courses"`
+	Version  int64               `json:"version"`
 }
 
-type WorkspaceManager struct {}
+type WorkspaceManager struct{}
 
 func NewWorkspaceManager() *WorkspaceManager {
-	return  &WorkspaceManager{}
+	return &WorkspaceManager{}
 }
 
 // FileDownloader fetches the raw content of a Moodle file URL. MoodleClient
@@ -50,7 +62,14 @@ type FileDownloader interface {
 	DownloadFile(fileURL string) ([]byte, error)
 }
 
-func (w *WorkspaceManager) SanitizeName (name string) string {
+// FileKey builds the stable key a file is stored under in SectionState.Files.
+// Moodle has no single file ID here, and one module can hold several files,
+// so the key combines the module ID with the file's path and name.
+func FileKey(file SectionFile) string {
+	return fmt.Sprintf("%d%s%s", file.ModuleID, file.Content.FilePath, file.Content.FileName)
+}
+
+func (w *WorkspaceManager) SanitizeName(name string) string {
 	name = strings.TrimSpace(name)
 
 	invalidChars := regexp.MustCompile(`[<>:"/\\|?*\x00-\x1F]`)
@@ -75,18 +94,18 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, dow
 		return fmt.Errorf("Failed create meta-data folder: %w", err)
 	}
 
-	initialState := WorkspaceState {
+	initialWorkspace := WorkspaceState{
 		LastSync: time.Now(),
-		Files: make(map[int]FileState),
+		Courses:  make(map[int]CourseState),
+		Version:  StateVersion,
 	}
 
-	nextFileID := 1
-
 	for _, course := range courses {
+		// Paths in the state are relative to targetDir, so the workspace
+		// keeps working if its root folder is moved or renamed.
 		courseFolder := w.SanitizeName(course.DisplayName)
-		coursePath := filepath.Join(targetDir, courseFolder)
 
-		if err := os.MkdirAll(coursePath, 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(targetDir, courseFolder), 0755); err != nil {
 			return fmt.Errorf("Failed creating course %s: %w", course.DisplayName, err)
 		}
 
@@ -96,7 +115,8 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, dow
 			ID:          course.ID,
 			ShortName:   course.ShortName,
 			DisplayName: course.DisplayName,
-			Path:        coursePath,
+			Path:        courseFolder,
+			Sections:    make(map[string]SectionState),
 		}
 
 		for i, sec := range course.Sections {
@@ -106,46 +126,52 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, dow
 			}
 
 			secFolder := fmt.Sprintf("%02d_%s", i+1, w.SanitizeName(secTitle))
-			secPath := filepath.Join(coursePath, secFolder)
+			secRelPath := filepath.Join(courseFolder, secFolder)
 
-			if err := os.MkdirAll(secPath, 0755); err != nil {
+			if err := os.MkdirAll(filepath.Join(targetDir, secRelPath), 0755); err != nil {
 				return fmt.Errorf("Failed creating section %s: %w", secFolder, err)
 			}
 
 			fmt.Printf("└── %s\n", secFolder)
 
-			courseState.Sections++
+			sectionState := SectionState{
+				ID:     sec.ID,
+				Number: int64(sec.Section),
+				Name:   sec.Name,
+				Folder: secFolder,
+				Files:  make(map[string]FileState),
+			}
 
 			for _, file := range sec.GetFiles() {
-				fileName := w.SanitizeName(file.FileName)
-				filePath := filepath.Join(secPath, fileName)
+				fileName := w.SanitizeName(file.Content.FileName)
+				fileRelPath := filepath.Join(secRelPath, fileName)
 
-				data, err := downloader.DownloadFile(file.FileURL)
+				data, err := downloader.DownloadFile(file.Content.FileURL)
 				if err != nil {
-					return fmt.Errorf("Failed downloading file %s: %w", file.FileName, err)
+					return fmt.Errorf("Failed downloading file %s: %w", file.Content.FileName, err)
 				}
 
-				if err := os.WriteFile(filePath, data, 0644); err != nil {
-					return fmt.Errorf("Failed writing file %s: %w", file.FileName, err)
+				if err := os.WriteFile(filepath.Join(targetDir, fileRelPath), data, 0644); err != nil {
+					return fmt.Errorf("Failed writing file %s: %w", file.Content.FileName, err)
 				}
 
-				initialState.Files[nextFileID] = FileState{
-					ID:           nextFileID,
-					Name:         file.FileName,
-					TimeModified: file.TimeModified,
-					Path:         filePath,
-					CourseID:     course.ID,
+				sectionState.Files[FileKey(file)] = FileState{
+					Name:         file.Content.FileName,
+					TimeModified: file.Content.TimeModified,
+					ModuleID:     int64(file.ModuleID),
+					Path:         fileRelPath,
 				}
-				nextFileID++
 
 				fmt.Printf("    - %s\n", fileName)
 			}
+
+			courseState.Sections[strconv.Itoa(sec.ID)] = sectionState
 		}
 
-		initialState.Courses = append(initialState.Courses, courseState)
+		initialWorkspace.Courses[courseState.ID] = courseState
 	}
 
-	if err := w.SaveState(targetDir, &initialState); err != nil {
+	if err := w.SaveState(targetDir, &initialWorkspace); err != nil {
 		return fmt.Errorf("Failed saving workspace state: %w", err)
 	}
 
@@ -182,7 +208,7 @@ func (w *WorkspaceManager) LoadState(rootDIr string) (*WorkspaceState, error) {
 	var state WorkspaceState
 
 	if err := json.Unmarshal(data, &state); err != nil {
-		return  nil, err
+		return nil, err
 	}
 
 	return &state, nil

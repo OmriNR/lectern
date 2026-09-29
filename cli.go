@@ -192,7 +192,6 @@ func (c *CLI) handleStatus() {
 
 	fmt.Printf("%-12s%s\n", "Workspace", root)
 	fmt.Printf("%-12s%s (%s)\n", "Last sync", state.LastSync.Format("2006-01-02 15:04"), humanAgo(state.LastSync))
-	fmt.Printf("%-12s%d across %d courses\n", "Files", len(state.Files), len(state.Courses))
 
 	for _, course := range state.Courses {
 		fmt.Println()
@@ -204,15 +203,15 @@ func (c *CLI) handleStatus() {
 		fmt.Println(title)
 
 		var names []string
-		for _, f := range state.Files {
-			if f.CourseID == course.ID {
+		for _, sec := range course.Sections {
+			for _, f := range sec.Files {
 				names = append(names, filepath.Base(f.Path))
 			}
 		}
 		sort.Strings(names)
 
-		fmt.Printf("  %-11s%s\n", "location", course.Path)
-		fmt.Printf("  %-11s%d\n", "sections", course.Sections)
+		fmt.Printf("  %-11s%s\n", "location", filepath.Join(root, course.Path))
+		fmt.Printf("  %-11s%d\n", "sections", len(course.Sections))
 		fmt.Printf("  %-11s%d\n", "files", len(names))
 		printFileColumns(names, 2)
 	}
