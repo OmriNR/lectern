@@ -21,11 +21,21 @@ type FileState struct {
 	Name 			string 	`json:"name"`
 	TimeModified	int64	`json:"time_modified"`
 	Path 			string	`json:"path"`
+	CourseID		int		`json:"course_id"`
+}
+
+type CourseState struct {
+	ID          int    `json:"id"`
+	ShortName   string `json:"short_name"`
+	DisplayName string `json:"display_name"`
+	Path        string `json:"path"`
+	Sections    int    `json:"sections"`
 }
 
 type WorkspaceState struct {
 	LastSync	time.Time			`json:"last_sync"`
 	Files 		map[int]FileState	`json:"files"`
+	Courses		[]CourseState		`json:"courses"`
 }
 
 type WorkspaceManager struct {}
@@ -82,6 +92,13 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, dow
 
 		fmt.Printf("course created %s\n", courseFolder)
 
+		courseState := CourseState{
+			ID:          course.ID,
+			ShortName:   course.ShortName,
+			DisplayName: course.DisplayName,
+			Path:        coursePath,
+		}
+
 		for i, sec := range course.Sections {
 			secTitle := strings.TrimSpace(sec.Name)
 			if secTitle == "" {
@@ -96,6 +113,8 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, dow
 			}
 
 			fmt.Printf("└── %s\n", secFolder)
+
+			courseState.Sections++
 
 			for _, file := range sec.GetFiles() {
 				fileName := w.SanitizeName(file.FileName)
@@ -115,12 +134,15 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, dow
 					Name:         file.FileName,
 					TimeModified: file.TimeModified,
 					Path:         filePath,
+					CourseID:     course.ID,
 				}
 				nextFileID++
 
 				fmt.Printf("    - %s\n", fileName)
 			}
 		}
+
+		initialState.Courses = append(initialState.Courses, courseState)
 	}
 
 	if err := w.SaveState(targetDir, &initialState); err != nil {
