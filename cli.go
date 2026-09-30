@@ -72,6 +72,12 @@ func (c *CLI) dispatch(args []string) int {
 		c.handleStatus()
 	case "config":
 		c.handleConfig(args[1:])
+	case "sync":
+		if !c.requireConnected() {
+			return 1
+		}
+
+		c.handleSync()
 	case "update":
 		c.handleShellUpdate()
 	case "ez":
@@ -167,6 +173,44 @@ func (c *CLI) handleClone(args []string) {
 	}
 
 	fmt.Println("CLoning finished successfully!!!")
+}
+
+func (c *CLI) handleSync() {
+	currentDir, err := os.Getwd()
+
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	root, err := c.workspace.FindRoot(currentDir)
+
+	if err != nil {
+		fmt.Printf("Couldn't find root: %v\n", err)
+		return
+	}
+
+	state, err := c.workspace.LoadState(root)
+	if err != nil {
+		fmt.Printf("Error loading sync file: %v\n", err)
+		return
+	}
+
+	fmt.Printf("%-12s%s (%s)\n", "Last sync", state.LastSync.Format("2006-01-02 15:04"), humanAgo(state.LastSync))
+
+	courses, err := c.client.GetUserCourses()
+	if err != nil {
+		fmt.Printf("Error fetching courses: %v\n", err)
+		return
+	}
+
+	for _, course := range courses {
+		if c.workspace.CheckIfCourseNew(state, course) {
+			fmt.Printf("%v - %s : This course is new\n", course.ID, course.DisplayName)
+		} else if c.workspace.CheckIfHasNewSections(state, course) {
+			fmt.Printf("%v - %s : This course has new sections\n", course.ID, course.DisplayName)
+		}
+	}
 }
 
 func (c *CLI) handleStatus() {

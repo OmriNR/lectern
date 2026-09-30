@@ -178,6 +178,25 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, dow
 	return nil
 }
 
+func (w *WorkspaceManager) CheckIfCourseNew(state *WorkspaceState, course Course) bool {
+	_, ok := state.Courses[course.ID]
+
+	return !ok
+}
+
+func (w *WorkspaceManager) CheckIfHasNewSections(state *WorkspaceState, course Course) bool {
+	for _, section := range course.Sections {
+
+		_, ok := state.Courses[course.ID].Sections[strconv.Itoa(section.ID)]
+
+		if !ok {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (w *WorkspaceManager) FindRoot(startDIr string) (string, error) {
 	curr := startDIr
 

@@ -24,7 +24,26 @@ import (
 //go:embed runner.php
 var runnerPHP string
 
-const containerName = "local-moodle_moodle_1"
+// containerNames are the names compose gives the moodle service: docker
+// compose v2 uses dashes, podman-compose / docker-compose v1 use underscores.
+var containerNames = []string{"local-moodle-moodle-1", "local-moodle_moodle_1"}
+
+// findContainer returns the first available container runtime (podman or
+// docker) that has a moodle container running, along with that container's
+// name.
+func findContainer() (string, string, error) {
+	for _, runtime := range []string{"podman", "docker"} {
+		if _, err := exec.LookPath(runtime); err != nil {
+			continue
+		}
+		for _, name := range containerNames {
+			if exec.Command(runtime, "inspect", name).Run() == nil {
+				return runtime, name, nil
+			}
+		}
+	}
+	return "", "", fmt.Errorf("no moodle container found (tried %v with podman/docker) - is docker-compose up?", containerNames)
+}
 
 type lecture struct {
 	Name    string `json:"name"`
@@ -493,30 +512,36 @@ func main() {
 	specPath := tmpDir + "/spec.json"
 	runnerPath := tmpDir + "/runner.php"
 
-	if err := os.WriteFile(specPath, specJSON, 0o600); err != nil {
+	if err := os.WriteFile(specPath, specJSON, 0o644); err != nil {
 		fmt.Println("write spec:", err)
 		os.Exit(1)
 	}
-	if err := os.WriteFile(runnerPath, []byte(runnerPHP), 0o600); err != nil {
+	if err := os.WriteFile(runnerPath, []byte(runnerPHP), 0o644); err != nil {
 		fmt.Println("write runner:", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("copying spec + runner into container...")
-	if err := run("podman", "cp", specPath, containerName+":/bitnami/moodle/seed_spec.json"); err != nil {
+	runtime, containerName, err := findContainer()
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("copying spec + runner into %s container %s...\n", runtime, containerName)
+	if err := run(runtime, "cp", specPath, containerName+":/bitnami/moodle/seed_spec.json"); err != nil {
 		fmt.Println("copy spec:", err)
 		os.Exit(1)
 	}
-	if err := run("podman", "cp", runnerPath, containerName+":/bitnami/moodle/seed_runner.php"); err != nil {
+	if err := run(runtime, "cp", runnerPath, containerName+":/bitnami/moodle/seed_runner.php"); err != nil {
 		fmt.Println("copy runner:", err)
 		os.Exit(1)
 	}
 
 	fmt.Println("running seed inside container...")
-	if err := run("podman", "exec", containerName, "php", "/bitnami/moodle/seed_runner.php", "/bitnami/moodle/seed_spec.json"); err != nil {
+	if err := run(runtime, "exec", containerName, "php", "/bitnami/moodle/seed_runner.php", "/bitnami/moodle/seed_spec.json"); err != nil {
 		fmt.Println("seed run failed:", err)
 		os.Exit(1)
 	}
 
-	_ = run("podman", "exec", containerName, "rm", "-f", "/bitnami/moodle/seed_runner.php", "/bitnami/moodle/seed_spec.json")
+	_ = run(runtime, "exec", containerName, "rm", "-f", "/bitnami/moodle/seed_runner.php", "/bitnami/moodle/seed_spec.json")
 }
