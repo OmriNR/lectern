@@ -50,6 +50,25 @@ type FileDownloader interface {
 	DownloadFile(fileURL string) ([]byte, error)
 }
 
+type CloneEventKind int
+
+const (
+	CloneCourseCreated CloneEventKind = iota
+	CloneSectionCreated
+	CloneFileDownloaded
+)
+
+// CloneEvent reports InitWorkspace progress. FilesDone/FilesTotal let callers
+// render a progress bar.
+type CloneEvent struct {
+	Kind       CloneEventKind
+	Course     string
+	Section    string
+	File       string
+	FilesDone  int
+	FilesTotal int
+}
+
 func (w *WorkspaceManager) SanitizeName (name string) string {
 	name = strings.TrimSpace(name)
 
@@ -64,7 +83,17 @@ func (w *WorkspaceManager) SanitizeName (name string) string {
 	return clean
 }
 
-func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, downloader FileDownloader) error {
+func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, downloader FileDownloader, onEvent func(CloneEvent)) error {
+	if onEvent == nil {
+		onEvent = func(CloneEvent) {}
+	}
+
+	filesTotal := 0
+	for _, course := range courses {
+		for _, sec := range course.Sections {
+			filesTotal += len(sec.GetFiles())
+		}
+	}
 
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return fmt.Errorf("Failed creating dest folder: %w", err)
@@ -90,7 +119,7 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, dow
 			return fmt.Errorf("Failed creating course %s: %w", course.DisplayName, err)
 		}
 
-		fmt.Printf("course created %s\n", courseFolder)
+		onEvent(CloneEvent{Kind: CloneCourseCreated, Course: courseFolder, FilesDone: nextFileID - 1, FilesTotal: filesTotal})
 
 		courseState := CourseState{
 			ID:          course.ID,
@@ -112,7 +141,7 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, dow
 				return fmt.Errorf("Failed creating section %s: %w", secFolder, err)
 			}
 
-			fmt.Printf("└── %s\n", secFolder)
+			onEvent(CloneEvent{Kind: CloneSectionCreated, Course: courseFolder, Section: secFolder, FilesDone: nextFileID - 1, FilesTotal: filesTotal})
 
 			courseState.Sections++
 
@@ -138,7 +167,7 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, dow
 				}
 				nextFileID++
 
-				fmt.Printf("    - %s\n", fileName)
+				onEvent(CloneEvent{Kind: CloneFileDownloaded, Course: courseFolder, Section: secFolder, File: fileName, FilesDone: nextFileID - 1, FilesTotal: filesTotal})
 			}
 		}
 

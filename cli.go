@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -107,94 +105,77 @@ func (c *CLI) handleConnect() {
 	}
 	password := strings.TrimSpace(string(passwordBytes))
 
-	if err := c.client.Login(username, password); err != nil {
-		fmt.Println("ERROR: failed to connect:", err)
-		return
-	}
-
-	cfg := &GlobalConfig{
-		BaseURL:  c.client.Host(),
-		Email:    c.client.user.Email,
-		Username: c.client.user.Username,
-		UserID:   c.client.user.ID,
-		Token:    c.client.token,
-	}
-
-	if err := SaveConfig(cfg); err != nil {
-		fmt.Println("ERROR: failed to save config:", err)
+	if err := c.connect(username, password); err != nil {
+		fmt.Println("ERROR:", err)
 		return
 	}
 	fmt.Println("Connected.")
 }
 
 func (c *CLI) requireConnected() bool {
-	if c.client == nil || c.client.token == "" {
-		fmt.Println("ERROR: not connected. Run 'connect' first.")
+	if !c.isConnected() {
+		fmt.Println("ERROR:", ErrNotConnected)
 		return false
 	}
 	return true
 }
 
 func (c *CLI) handleClone(args []string) {
-	currentDIr, err := os.Getwd()
-
-	if err != nil {
-		fmt.Printf("Error recognizing current folder: %v\n", err)
-		return
+	path := ""
+	if len(args) > 0 {
+		path = args[0]
 	}
 
-	targetDir := currentDIr
-
-	if len(args) > 0 {
-		customPath := args[0]
-		if filepath.IsAbs(customPath) {
-			targetDir = customPath
-		} else {
-			targetDir = filepath.Join(currentDIr, customPath)
-		}
+	targetDir, err := resolveCloneTarget(path)
+	if err != nil {
+		fmt.Printf("Error %v\n", err)
+		return
 	}
 
 	fmt.Println("Pulling courses from the moodle...")
-	courses, err := c.client.GetUserCourses()
+	courses, err := c.fetchCourses()
 	if err != nil {
-		fmt.Printf("Error fetching courses: %v\n", err)
+		fmt.Printf("Error %v\n", err)
 		return
 	}
 
-	if err := c.workspace.InitWorkspace(targetDir, courses, c.client); err != nil {
-		fmt.Printf("Error setting up workspace: %v\n", err)
+	err = c.cloneCourses(targetDir, courses, func(e CloneEvent) {
+		switch e.Kind {
+		case CloneCourseCreated:
+			fmt.Printf("course created %s\n", e.Course)
+		case CloneSectionCreated:
+			fmt.Printf("└── %s\n", e.Section)
+		case CloneFileDownloaded:
+			fmt.Printf("    - %s\n", e.File)
+		}
+	})
+	if err != nil {
+		fmt.Printf("Error %v\n", err)
 		return
 	}
 
-	fmt.Println("CLoning finished successfully!!!")
+	fmt.Println("Cloning finished successfully!")
 }
 
 func (c *CLI) handleStatus() {
 	currentDir, err := os.Getwd()
-
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
-	root, err := c.workspace.FindRoot(currentDir)
-
+	report, err := c.loadStatus(currentDir)
 	if err != nil {
-		fmt.Printf("Couldn't find root: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
-	state, err := c.workspace.LoadState(root)
-	if err != nil {
-		fmt.Printf("Error loading sync file: %v\n", err)
-		return
-	}
-
-	fmt.Printf("%-12s%s\n", "Workspace", root)
+	state := report.State
+	fmt.Printf("%-12s%s\n", "Workspace", report.Root)
 	fmt.Printf("%-12s%s (%s)\n", "Last sync", state.LastSync.Format("2006-01-02 15:04"), humanAgo(state.LastSync))
-	fmt.Printf("%-12s%d across %d courses\n", "Files", len(state.Files), len(state.Courses))
+	fmt.Printf("%-12s%d across %d courses\n", "Files", report.TotalFiles, len(report.Courses))
 
-	for _, course := range state.Courses {
+	for _, course := range report.Courses {
 		fmt.Println()
 
 		title := course.DisplayName
@@ -203,18 +184,10 @@ func (c *CLI) handleStatus() {
 		}
 		fmt.Println(title)
 
-		var names []string
-		for _, f := range state.Files {
-			if f.CourseID == course.ID {
-				names = append(names, filepath.Base(f.Path))
-			}
-		}
-		sort.Strings(names)
-
 		fmt.Printf("  %-11s%s\n", "location", course.Path)
 		fmt.Printf("  %-11s%d\n", "sections", course.Sections)
-		fmt.Printf("  %-11s%d\n", "files", len(names))
-		printFileColumns(names, 2)
+		fmt.Printf("  %-11s%d\n", "files", len(course.Files))
+		printFileColumns(course.Files, 2)
 	}
 }
 
@@ -297,12 +270,10 @@ func (c *CLI) handleConfigCheck() {
 }
 
 func (c *CLI) handleConfigClear() {
-	if err := ClearConfig(); err != nil {
-		fmt.Printf("Error clearing config: %v\n", err)
+	if err := c.clearConfig(); err != nil {
+		fmt.Printf("Error %v\n", err)
 		return
 	}
-
-	c.client.RestoreSession("", nil)
 	fmt.Println("Config cleared.")
 }
 
