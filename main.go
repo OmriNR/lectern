@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"lectern/core"
 )
 
 func main() {
@@ -11,28 +13,25 @@ func main() {
 		baseURL = "http://localhost:8080"
 	}
 
-	cfg, err := LoadConfig()
+	cfg, err := core.LoadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load config: %v\n", err)
-		cfg = &GlobalConfig{}
+		cfg = &core.GlobalConfig{}
 	}
 
 	if cfg.BaseURL != "" {
 		baseURL = cfg.BaseURL
 	}
 
-	client := New(baseURL)
+	client := core.New(baseURL)
 	if cfg.Token != "" {
-		client.RestoreSession(cfg.Token, &User{
+		client.RestoreSession(cfg.Token, &core.User{
 			ID:       cfg.UserID,
 			Username: cfg.Username,
 			Email:    cfg.Email,
 		})
 	}
 
-	cli := &CLI{
-		client:    client,
-		workspace: NewWorkspaceManager(),
-	}
+	cli := &CLI{svc: core.NewService(client)}
 	cli.Run(os.Args[1:])
 }

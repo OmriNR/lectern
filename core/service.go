@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"errors"
@@ -13,22 +13,41 @@ import (
 
 var ErrNotConnected = errors.New("not connected. Run 'connect' first")
 
-func (c *CLI) isConnected() bool {
-	return c.client != nil && c.client.token != ""
+// Service is lectern's application layer: a Moodle client plus the local
+// workspace manager.
+type Service struct {
+	client    *MoodleClient
+	workspace *WorkspaceManager
+}
+
+func NewService(client *MoodleClient) *Service {
+	return &Service{client: client, workspace: NewWorkspaceManager()}
+}
+
+func (s *Service) IsConnected() bool {
+	return s.client != nil && s.client.token != ""
+}
+
+// Username returns the connected user's username, or "" when not connected.
+func (s *Service) Username() string {
+	if !s.IsConnected() || s.client.user == nil {
+		return ""
+	}
+	return s.client.user.Username
 }
 
 // connect logs in to Moodle and persists the session to the global config.
-func (c *CLI) connect(username, password string) error {
-	if err := c.client.Login(username, password); err != nil {
+func (s *Service) Connect(username, password string) error {
+	if err := s.client.Login(username, password); err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 
 	cfg := &GlobalConfig{
-		BaseURL:  c.client.Host(),
-		Email:    c.client.user.Email,
-		Username: c.client.user.Username,
-		UserID:   c.client.user.ID,
-		Token:    c.client.token,
+		BaseURL:  s.client.Host(),
+		Email:    s.client.user.Email,
+		Username: s.client.user.Username,
+		UserID:   s.client.user.ID,
+		Token:    s.client.token,
 	}
 
 	if err := SaveConfig(cfg); err != nil {
@@ -37,9 +56,9 @@ func (c *CLI) connect(username, password string) error {
 	return nil
 }
 
-// resolveCloneTarget turns an optional user-supplied path into an absolute
+// ResolveCloneTarget turns an optional user-supplied path into an absolute
 // target directory, defaulting to the current directory.
-func resolveCloneTarget(path string) (string, error) {
+func ResolveCloneTarget(path string) (string, error) {
 	currentDir, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("recognizing current folder: %w", err)
@@ -54,21 +73,21 @@ func resolveCloneTarget(path string) (string, error) {
 	return filepath.Join(currentDir, path), nil
 }
 
-func (c *CLI) fetchCourses() ([]Course, error) {
-	if !c.isConnected() {
+func (s *Service) FetchCourses() ([]Course, error) {
+	if !s.IsConnected() {
 		return nil, ErrNotConnected
 	}
 
-	courses, err := c.client.GetUserCourses()
+	courses, err := s.client.GetUserCourses()
 	if err != nil {
 		return nil, fmt.Errorf("fetching courses: %w", err)
 	}
 	return courses, nil
 }
 
-// cloneCourses downloads the given courses into targetDir. onEvent may be nil.
-func (c *CLI) cloneCourses(targetDir string, courses []Course, onEvent func(CloneEvent)) error {
-	if err := c.workspace.InitWorkspace(targetDir, courses, c.client, onEvent); err != nil {
+// CloneCourses downloads the given courses into targetDir. onEvent may be nil.
+func (s *Service) CloneCourses(targetDir string, courses []Course, onEvent func(CloneEvent)) error {
+	if err := s.workspace.InitWorkspace(targetDir, courses, s.client, onEvent); err != nil {
 		return fmt.Errorf("setting up workspace: %w", err)
 	}
 	return nil
@@ -86,14 +105,14 @@ type StatusReport struct {
 	TotalFiles int
 }
 
-// loadStatus finds the workspace containing startDir and summarizes it.
-func (c *CLI) loadStatus(startDir string) (*StatusReport, error) {
-	root, err := c.workspace.FindRoot(startDir)
+// LoadStatus finds the workspace containing startDir and summarizes it.
+func (s *Service) LoadStatus(startDir string) (*StatusReport, error) {
+	root, err := s.workspace.FindRoot(startDir)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't find root: %w", err)
 	}
 
-	state, err := c.workspace.LoadState(root)
+	state, err := s.workspace.LoadState(root)
 	if err != nil {
 		return nil, fmt.Errorf("loading sync file: %w", err)
 	}
@@ -119,11 +138,11 @@ func (c *CLI) loadStatus(startDir string) (*StatusReport, error) {
 	return report, nil
 }
 
-func (c *CLI) clearConfig() error {
+func (s *Service) ClearConfig() error {
 	if err := ClearConfig(); err != nil {
 		return fmt.Errorf("clearing config: %w", err)
 	}
 
-	c.client.RestoreSession("", nil)
+	s.client.RestoreSession("", nil)
 	return nil
 }
