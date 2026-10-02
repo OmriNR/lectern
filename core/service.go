@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,7 +12,11 @@ import (
 // This file holds lectern's operations without any terminal I/O, so both the
 // plain subcommands and the interactive TUI can drive them.
 
-var ErrNotConnected = errors.New("not connected. Run 'connect' first")
+var (
+	ErrNotConnected = errors.New("not connected. Run 'connect' first")
+	ErrInvalidLogin = errors.New("wrong username or password")
+	ErrUnreachable  = errors.New("can't reach the Moodle site")
+)
 
 // Service is lectern's application layer: a Moodle client plus the local
 // workspace manager.
@@ -28,7 +33,10 @@ func (s *Service) IsConnected() bool {
 	return s.client != nil && s.client.token != ""
 }
 
-// Username returns the connected user's username, or "" when not connected.
+func (s *Service) Host() string {
+	return s.client.Host()
+}
+
 func (s *Service) Username() string {
 	if !s.IsConnected() || s.client.user == nil {
 		return ""
@@ -51,13 +59,25 @@ func (s *Service) Connect(username, password string) error {
 	}
 
 	if err := SaveConfig(cfg); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+		return loginError(s.client.Host(), err)
 	}
 	return nil
 }
 
-// ResolveCloneTarget turns an optional user-supplied path into an absolute
-// target directory, defaulting to the current directory.
+func loginError(host string, err error) error {
+	var me *moodleError
+	if errors.As(err, &me) && me.ErrorCode == "invalidlogin" {
+		return ErrInvalidLogin
+	}
+
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%w at %s", ErrUnreachable, host)
+	}
+
+	return fmt.Errorf("failed to connect: %w", err)
+}
+
 func ResolveCloneTarget(path string) (string, error) {
 	currentDir, err := os.Getwd()
 	if err != nil {

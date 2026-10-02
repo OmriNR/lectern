@@ -8,9 +8,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const service = "moodle_mobile_app"
+const loginTimeout = 20 * time.Second
 
 type MoodleClient struct {
 	host  string
@@ -78,6 +80,9 @@ func (c *MoodleClient) RestoreSession(token string, user *User) {
 }
 
 func (c *MoodleClient) requestToken(username, password string) (string, error) {
+	client := *c.http
+	client.Timeout = loginTimeout
+
 	resp, err := c.http.PostForm(c.host+"/login/token.php", url.Values{
 		"username": {username},
 		"password": {password},
@@ -103,7 +108,7 @@ func (c *MoodleClient) requestToken(username, password string) (string, error) {
 	}
 
 	if result.Token == "" {
-		return "", fmt.Errorf("%s", result.Error)
+		return "", &moodleError{ErrorCode: result.ErrorCode, Message: result.Error}
 	}
 
 	return result.Token, nil

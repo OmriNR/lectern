@@ -44,6 +44,7 @@ type helpProvider interface {
 // session is shared by every screen.
 type session struct {
 	svc           *core.Service
+	username      string
 	width, height int // space available for the screen body
 }
 
@@ -60,7 +61,7 @@ func Run(svc *core.Service) error {
 }
 
 func newApp(svc *core.Service) app {
-	sess := &session{svc: svc}
+	sess := &session{svc: svc, username: svc.Username()}
 	return app{sess: sess, current: newMenuScreen(sess), help: help.New()}
 }
 
@@ -81,7 +82,8 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		a.current, cmd = a.current.Update(tea.WindowSizeMsg{Width: a.sess.width, Height: a.sess.height})
 		return a, cmd
-
+	case connectedMsg:
+		a.sess.username = msg.username
 	case navigateMsg:
 		a.current = a.newScreen(msg.to)
 		return a, a.current.Init()
@@ -97,7 +99,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a app) newScreen(id screenID) screen {
 	switch id {
 	case scrConnect:
-		return newPlaceholderScreen("Connect")
+		return newConnectScreen(a.sess)
 	case scrClone:
 		return newPlaceholderScreen("Clone")
 	case scrStatus:
@@ -117,7 +119,7 @@ func (a app) View() string {
 // header and footer get real styling in the theme step.
 func (a app) header() string {
 	status := "not connected"
-	if name := a.sess.svc.Username(); name != "" {
+	if name := a.sess.username; name != "" {
 		status = "connected · " + name
 	}
 	return "lectern_   " + status + "\n"
