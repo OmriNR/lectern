@@ -84,6 +84,8 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	case connectedMsg:
 		a.sess.username = msg.username
+	case disconnectedMsg:
+		a.sess.username = ""
 	case navigateMsg:
 		a.current = a.newScreen(msg.to)
 		return a, a.current.Init()
@@ -105,7 +107,7 @@ func (a app) newScreen(id screenID) screen {
 	case scrStatus:
 		return newPlaceholderScreen("Status")
 	case scrConfig:
-		return newPlaceholderScreen("Config")
+		return newConfigScreen(a.sess)
 	default:
 		return newMenuScreen(a.sess)
 	}
