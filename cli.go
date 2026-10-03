@@ -5,51 +5,30 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"sort"
 	"strings"
-	"time"
+
+	"lectern/core"
+	"lectern/tui"
 
 	"golang.org/x/term"
 )
 
 type CLI struct {
-	client    *MoodleClient
-	workspace *WorkspaceManager
+	svc *core.Service
 }
 
 func (c *CLI) Run(args []string) {
 	if len(args) == 0 {
-		c.RunInteractive()
-		return
+		// A bare `lectern` opens the menu in a real terminal; when piped or
+		// scripted there's no one to drive it, so show help instead.
+		if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+			args = []string{"ez"}
+		} else {
+			args = []string{"help"}
+		}
 	}
 
 	os.Exit(c.dispatch(args))
-}
-
-func (c *CLI) RunInteractive() {
-	fmt.Println("lectern is running")
-	fmt.Println("write help to see commands")
-
-	scanner := bufio.NewScanner(os.Stdin)
-	for {
-		fmt.Print("> ")
-		if !scanner.Scan() {
-			return
-		}
-
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-
-		args := strings.Fields(line)
-		if args[0] == "exit" || args[0] == "quit" {
-			return
-		}
-
-		c.dispatch(args)
-	}
 }
 
 func (c *CLI) dispatch(args []string) int {
@@ -75,10 +54,10 @@ func (c *CLI) dispatch(args []string) int {
 	case "update":
 		c.handleShellUpdate()
 	case "ez":
-		if !c.requireConnected() {
+		if err := tui.Run(c.svc); err != nil {
+			fmt.Fprintln(os.Stderr, "lectern:", err)
 			return 1
 		}
-		c.handleEZ()
 	case "help", "--help", "-h":
 		c.printHelp()
 	default:
@@ -107,94 +86,77 @@ func (c *CLI) handleConnect() {
 	}
 	password := strings.TrimSpace(string(passwordBytes))
 
-	if err := c.client.Login(username, password); err != nil {
-		fmt.Println("ERROR: failed to connect:", err)
-		return
-	}
-
-	cfg := &GlobalConfig{
-		BaseURL:  c.client.Host(),
-		Email:    c.client.user.Email,
-		Username: c.client.user.Username,
-		UserID:   c.client.user.ID,
-		Token:    c.client.token,
-	}
-
-	if err := SaveConfig(cfg); err != nil {
-		fmt.Println("ERROR: failed to save config:", err)
+	if err := c.svc.Connect(username, password); err != nil {
+		fmt.Println("ERROR:", err)
 		return
 	}
 	fmt.Println("Connected.")
 }
 
 func (c *CLI) requireConnected() bool {
-	if c.client == nil || c.client.token == "" {
-		fmt.Println("ERROR: not connected. Run 'connect' first.")
+	if !c.svc.IsConnected() {
+		fmt.Println("ERROR:", core.ErrNotConnected)
 		return false
 	}
 	return true
 }
 
 func (c *CLI) handleClone(args []string) {
-	currentDIr, err := os.Getwd()
-
-	if err != nil {
-		fmt.Printf("Error recognizing current folder: %v\n", err)
-		return
+	path := ""
+	if len(args) > 0 {
+		path = args[0]
 	}
 
-	targetDir := currentDIr
-
-	if len(args) > 0 {
-		customPath := args[0]
-		if filepath.IsAbs(customPath) {
-			targetDir = customPath
-		} else {
-			targetDir = filepath.Join(currentDIr, customPath)
-		}
+	targetDir, err := core.ResolveCloneTarget(path)
+	if err != nil {
+		fmt.Printf("Error %v\n", err)
+		return
 	}
 
 	fmt.Println("Pulling courses from the moodle...")
-	courses, err := c.client.GetUserCourses()
+	courses, err := c.svc.FetchCourses()
 	if err != nil {
-		fmt.Printf("Error fetching courses: %v\n", err)
+		fmt.Printf("Error %v\n", err)
 		return
 	}
 
-	if err := c.workspace.InitWorkspace(targetDir, courses, c.client); err != nil {
-		fmt.Printf("Error setting up workspace: %v\n", err)
+	err = c.svc.CloneCourses(targetDir, courses, func(e core.CloneEvent) {
+		switch e.Kind {
+		case core.CloneCourseCreated:
+			fmt.Printf("course created %s\n", e.Course)
+		case core.CloneSectionCreated:
+			fmt.Printf("└── %s\n", e.Section)
+		case core.CloneFileDownloaded:
+			fmt.Printf("    - %s\n", e.File)
+		}
+	})
+	if err != nil {
+		fmt.Printf("Error %v\n", err)
 		return
 	}
 
-	fmt.Println("CLoning finished successfully!!!")
+	fmt.Println("Cloning finished successfully!")
 }
 
 func (c *CLI) handleStatus() {
 	currentDir, err := os.Getwd()
-
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
-	root, err := c.workspace.FindRoot(currentDir)
-
+	report, err := c.svc.LoadStatus(currentDir)
 	if err != nil {
-		fmt.Printf("Couldn't find root: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
-	state, err := c.workspace.LoadState(root)
-	if err != nil {
-		fmt.Printf("Error loading sync file: %v\n", err)
-		return
-	}
+	state := report.State
+	fmt.Printf("%-12s%s\n", "Workspace", report.Root)
+	fmt.Printf("%-12s%s (%s)\n", "Last sync", state.LastSync.Format("2006-01-02 15:04"), core.HumanAgo(state.LastSync))
+	fmt.Printf("%-12s%d across %d courses\n", "Files", report.TotalFiles, len(report.Courses))
 
-	fmt.Printf("%-12s%s\n", "Workspace", root)
-	fmt.Printf("%-12s%s (%s)\n", "Last sync", state.LastSync.Format("2006-01-02 15:04"), humanAgo(state.LastSync))
-	fmt.Printf("%-12s%d across %d courses\n", "Files", len(state.Files), len(state.Courses))
-
-	for _, course := range state.Courses {
+	for _, course := range report.Courses {
 		fmt.Println()
 
 		title := course.DisplayName
@@ -203,33 +165,10 @@ func (c *CLI) handleStatus() {
 		}
 		fmt.Println(title)
 
-		var names []string
-		for _, f := range state.Files {
-			if f.CourseID == course.ID {
-				names = append(names, filepath.Base(f.Path))
-			}
-		}
-		sort.Strings(names)
-
 		fmt.Printf("  %-11s%s\n", "location", course.Path)
 		fmt.Printf("  %-11s%d\n", "sections", course.Sections)
-		fmt.Printf("  %-11s%d\n", "files", len(names))
-		printFileColumns(names, 2)
-	}
-}
-
-func humanAgo(t time.Time) string {
-	d := time.Since(t)
-
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+		fmt.Printf("  %-11s%d\n", "files", len(course.Files))
+		printFileColumns(course.Files, 2)
 	}
 }
 
@@ -276,7 +215,7 @@ func (c *CLI) handleConfig(args []string) {
 }
 
 func (c *CLI) handleConfigCheck() {
-	status, err := CheckConfig()
+	status, err := core.CheckConfig()
 	if err != nil {
 		fmt.Printf("Error loading config: %v\n", err)
 		return
@@ -297,12 +236,10 @@ func (c *CLI) handleConfigCheck() {
 }
 
 func (c *CLI) handleConfigClear() {
-	if err := ClearConfig(); err != nil {
-		fmt.Printf("Error clearing config: %v\n", err)
+	if err := c.svc.ClearConfig(); err != nil {
+		fmt.Printf("Error %v\n", err)
 		return
 	}
-
-	c.client.RestoreSession("", nil)
 	fmt.Println("Config cleared.")
 }
 
@@ -316,12 +253,6 @@ func (c *CLI) handleShellUpdate() {
 	}
 }
 
-func (c *CLI) handleEZ() {
-	if err := runEZ(c); err != nil {
-		fmt.Printf("Error running easy menu: %v\n", err)
-	}
-}
-
 func (c *CLI) printHelp() {
 	fmt.Println("usage: lectern <command> [<args>]")
 	fmt.Println()
@@ -331,8 +262,7 @@ func (c *CLI) printHelp() {
 	fmt.Println("  status       - check status of the local workspace")
 	fmt.Println("  config check - print what's saved in the local config file")
 	fmt.Println("  config clear - clear the local config file")
-	fmt.Println("  ez           - opens the easy menu (for users that are not used to terminal commands)")
+	fmt.Println("  ez           - Open the interactive menu (also what plain 'lectern' does)")
 	fmt.Println("  help         - Show this help")
 	fmt.Println("  update       - Install/Update lectern")
-	fmt.Println("  exit         - Exit lectern (interactive mode only)")
 }
