@@ -72,7 +72,14 @@ func Run(svc *core.Service) error {
 
 func newApp(svc *core.Service) app {
 	sess := &session{svc: svc, username: svc.Username()}
-	return app{sess: sess, current: newMenuScreen(sess), help: help.New(), cursorOn: true}
+
+	h := help.New()
+	h.Styles.ShortKey = keyStyle
+	h.Styles.ShortDesc = mutedStyle
+	h.Styles.ShortSeparator = lipgloss.NewStyle().Foreground(colorRule)
+	h.Styles.Ellipsis = mutedStyle
+
+	return app{sess: sess, current: newMenuScreen(sess), help: h, cursorOn: true}
 }
 
 func (a app) Init() tea.Cmd { return tea.Batch(a.current.Init(), blink()) }
@@ -86,9 +93,8 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		a.sess.width = msg.Width
-		a.help.Width = msg.Width
+		a.help.Width = max(0, msg.Width-4) // same margins as the header
 		a.sess.height = max(0, msg.Height-lipgloss.Height(a.header())-lipgloss.Height(a.footer()))
-		// Screens get the body size, not the whole terminal.
 		var cmd tea.Cmd
 		a.current, cmd = a.current.Update(tea.WindowSizeMsg{Width: a.sess.width, Height: a.sess.height})
 		return a, cmd
@@ -126,7 +132,11 @@ func (a app) newScreen(id screenID) screen {
 }
 
 func (a app) View() string {
-	body := lipgloss.NewStyle().Height(a.sess.height).Render(a.current.View())
+	body := lipgloss.NewStyle().
+		Height(a.sess.height).
+		MaxHeight(a.sess.height).
+		MaxWidth(a.sess.width).
+		Render(a.current.View())
 	return lipgloss.JoinVertical(lipgloss.Left, a.header(), body, a.footer())
 }
 
@@ -150,12 +160,19 @@ func (a app) header() string {
 	}
 	rule := lipgloss.NewStyle().Foreground(colorRule).Render(strings.Repeat("─", width))
 
-	return " " + line + "\n" + " " + rule
+	return "  " + line + "\n" + "  " + rule
 }
 
 func (a app) footer() string {
+	width := max(0, a.sess.width-4)
+	rule := lipgloss.NewStyle().Foreground(colorRule).Render(strings.Repeat("─", width))
+
+	keys := ""
 	if hp, ok := a.current.(helpProvider); ok {
-		return a.help.ShortHelpView(hp.ShortHelp())
+		keys = a.help.ShortHelpView(hp.ShortHelp())
 	}
-	return ""
+
+	keys = lipgloss.NewStyle().MaxWidth(width).Render(keys)
+
+	return "  " + rule + "\n" + "  " + keys
 }
