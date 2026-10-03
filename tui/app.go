@@ -4,6 +4,8 @@ package tui
 
 import (
 	"lectern/core"
+	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -49,12 +51,20 @@ type session struct {
 }
 
 type app struct {
-	sess    *session
-	current screen
-	help    help.Model
+	sess     *session
+	current  screen
+	help     help.Model
+	cursorOn bool
 }
 
-// Run starts the interactive interface and blocks until the user quits.
+type blinkMsg struct{}
+
+const blinkInterval = 530 * time.Millisecond
+
+func blink() tea.Cmd {
+	return tea.Tick(blinkInterval, func(time.Time) tea.Msg { return blinkMsg{} })
+}
+
 func Run(svc *core.Service) error {
 	_, err := tea.NewProgram(newApp(svc), tea.WithAltScreen()).Run()
 	return err
@@ -62,10 +72,10 @@ func Run(svc *core.Service) error {
 
 func newApp(svc *core.Service) app {
 	sess := &session{svc: svc, username: svc.Username()}
-	return app{sess: sess, current: newMenuScreen(sess), help: help.New()}
+	return app{sess: sess, current: newMenuScreen(sess), help: help.New(), cursorOn: true}
 }
 
-func (a app) Init() tea.Cmd { return a.current.Init() }
+func (a app) Init() tea.Cmd { return tea.Batch(a.current.Init(), blink()) }
 
 func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -84,13 +94,15 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	case connectedMsg:
 		a.sess.username = msg.username
+	case blinkMsg:
+		a.cursorOn = !a.cursorOn
+		return a, blink()
 	case disconnectedMsg:
 		a.sess.username = ""
 	case navigateMsg:
 		a.current = a.newScreen(msg.to)
 		return a, a.current.Init()
 	}
-
 	var cmd tea.Cmd
 	a.current, cmd = a.current.Update(msg)
 	return a, cmd
@@ -120,11 +132,25 @@ func (a app) View() string {
 
 // header and footer get real styling in the theme step.
 func (a app) header() string {
-	status := "not connected"
-	if name := a.sess.username; name != "" {
-		status = "connected · " + name
+	cursor := " "
+	if a.cursorOn {
+		cursor = accentStyle.Render("_")
 	}
-	return "lectern_   " + status + "\n"
+	logo := titleStyle.Render("lectern") + cursor
+
+	status := mutedStyle.Render("not connected")
+	if name := a.sess.username; name != "" {
+		status = accentStyle.Render("●") + mutedStyle.Render(" connected · "+name)
+	}
+
+	width := max(0, a.sess.width-4)
+	line := logo
+	if gap := width - lipgloss.Width(logo) - lipgloss.Width(status); gap >= 2 {
+		line += strings.Repeat(" ", gap) + status
+	}
+	rule := lipgloss.NewStyle().Foreground(colorRule).Render(strings.Repeat("─", width))
+
+	return " " + line + "\n" + " " + rule
 }
 
 func (a app) footer() string {

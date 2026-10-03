@@ -37,8 +37,17 @@ func newMenuScreen(s *session) *menuScreen {
 		menuItem{title: "Quit", desc: "Exit lectern", quit: true},
 	}
 
-	l := list.New(items, list.NewDefaultDelegate(), s.width, s.height)
+	// The list's default colors are purple; switch them to the theme.
+	delegate := list.NewDefaultDelegate()
+	delegate.Styles.SelectedTitle = delegate.Styles.SelectedTitle.Foreground(colorOrange).BorderForeground(colorOrange)
+	delegate.Styles.SelectedDesc = delegate.Styles.SelectedDesc.Foreground(colorMuted).BorderForeground(colorOrange)
+	delegate.Styles.NormalTitle = delegate.Styles.NormalTitle.Foreground(colorText)
+	delegate.Styles.NormalDesc = delegate.Styles.NormalDesc.Foreground(colorMuted)
+
+	l := list.New(items, delegate, s.width, s.height)
 	l.Title = "What would you like to do?"
+	l.Styles.Title = l.Styles.Title.UnsetBackground().Foreground(colorText).Bold(true)
+	l.SetShowStatusBar(false) // hides "5 items"
 	l.SetShowHelp(false)
 	l.SetFilteringEnabled(false)
 	l.DisableQuitKeybindings()
