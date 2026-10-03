@@ -41,12 +41,6 @@ func loadStatusCmd(svc *core.Service) tea.Cmd {
 	}
 }
 
-// Temporary styles until theme.go exists.
-var (
-	statusMutedStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#6B6B6B", Dark: "#8A8A8A"})
-	statusTitleStyle = lipgloss.NewStyle().Bold(true)
-)
-
 var (
 	statusKeyScroll  = key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑/↓", "scroll"))
 	statusKeyRefresh = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh"))
@@ -178,14 +172,14 @@ func (m *statusScreen) View() string {
 
 	case statusNotWorkspace:
 		return "\n" +
-			"  " + statusTitleStyle.Render("Not a lectern workspace") + "\n\n" +
-			"  " + statusMutedStyle.Render(tildify(m.dir)+" isn't inside a cloned folder.") + "\n" +
+			"  " + titleStyle.Render("Not a lectern workspace") + "\n\n" +
+			"  " + mutedStyle.Render(tildify(m.dir)+" isn't inside a cloned folder.") + "\n" +
 			"  Run Clone to create one, or start lectern from inside a workspace."
 
 	case statusFailed:
 		errText := lipgloss.NewStyle().Width(max(10, m.width-4)).Render(m.err.Error())
 		return "\n" +
-			"  " + statusTitleStyle.Render("✗ Couldn't read the workspace") + "\n\n" +
+			"  " + titleStyle.Render("✗ Couldn't read the workspace") + "\n\n" +
 			lipgloss.NewStyle().PaddingLeft(2).Render(errText) + "\n\n" +
 			"  Press r to try again."
 	}
@@ -215,7 +209,7 @@ func (m *statusScreen) renderSummary() string {
 	r := m.report
 	valueWidth := max(10, m.width-16)
 	row := func(label, value string) string {
-		return "  " + statusMutedStyle.Render(fmt.Sprintf("%-12s", label)) + truncate(value, valueWidth)
+		return "  " + mutedStyle.Render(fmt.Sprintf("%-12s", label)) + truncate(value, valueWidth)
 	}
 
 	last := r.State.LastSync
@@ -236,14 +230,14 @@ func (m *statusScreen) separator() string {
 		label = fmt.Sprintf(" %3.0f%%", m.vp.ScrollPercent()*100)
 	}
 	rule := strings.Repeat("─", max(0, width-lipgloss.Width(label)))
-	return "  " + statusMutedStyle.Render(rule+label)
+	return "  " + mutedStyle.Render(rule+label)
 }
 
 // renderCourses builds the scrollable content. It's called on load and on
 // resize only, never from View.
 func (m *statusScreen) renderCourses(width int) string {
 	if len(m.report.Courses) == 0 {
-		return "\n  " + statusMutedStyle.Render("No courses in this workspace.")
+		return "\n  " + mutedStyle.Render("No courses in this workspace.")
 	}
 
 	inner := max(10, width-4) // 2 columns of margin on each side
@@ -258,18 +252,18 @@ func (m *statusScreen) renderCourses(width int) string {
 		}
 		count := fmt.Sprintf("%d files", len(c.Files))
 		titleWidth := max(1, inner-lipgloss.Width(count)-1)
-		b.WriteString("  " + statusTitleStyle.Width(titleWidth).Render(truncate(title, titleWidth)) +
-			" " + statusMutedStyle.Render(count) + "\n")
+		b.WriteString("  " + titleStyle.Width(titleWidth).Render(truncate(title, titleWidth)) +
+			" " + mutedStyle.Render(count) + "\n")
 
 		location := c.Path
 		if rel, err := filepath.Rel(m.report.Root, c.Path); err == nil {
 			location = rel
 		}
 		info := fmt.Sprintf("%s/ · %d sections", location, c.Sections)
-		b.WriteString("    " + statusMutedStyle.Render(truncate(info, inner-2)) + "\n")
+		b.WriteString("    " + mutedStyle.Render(truncate(info, inner-2)) + "\n")
 
 		if len(c.Files) == 0 {
-			b.WriteString("      " + statusMutedStyle.Render("no files") + "\n")
+			b.WriteString("      " + mutedStyle.Render("no files") + "\n")
 			continue
 		}
 		b.WriteString(fileColumns(c.Files, inner-4, "      "))

@@ -53,7 +53,7 @@ type configScreen struct {
 
 func newConfigScreen(s *session) *configScreen {
 	spinner := spinner.New(spinner.WithSpinner(spinner.Dot))
-	spinner.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	spinner.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOrange))
 
 	initialState := stateNotLoggedIn
 	if s.username != "" {

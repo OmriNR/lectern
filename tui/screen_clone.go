@@ -29,8 +29,6 @@ type fetchFailedMsg struct{ err error }
 type cloneEventMsg core.CloneEvent
 type cloneFinishedMsg struct{ err error }
 
-var cloneAccentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#E0892B"))
-
 var (
 	cloneKeyNext   = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "next"))
 	cloneKeyStart  = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "start"))
@@ -106,34 +104,34 @@ func (m *cloneScreen) View() string {
 
 	switch m.state {
 	case cloneChoosingDir:
-		body = statusTitleStyle.Render("Clone your courses") + "\n\n" +
+		body = titleStyle.Render("Clone your courses") + "\n\n" +
 			"where should the courses go?\n" +
 			m.input.View()
 		if m.err != nil {
-			body += "\n\n" + cloneAccentStyle.Render("✗ ") + m.err.Error()
+			body += "\n\n" + accentStyle.Render("✗ ") + m.err.Error()
 		}
 	case cloneFetching:
 		body = strings.TrimSpace(m.spinner.View()) + " Fetching your courses from " + m.sess.svc.Host() + "..."
 	case cloneConfirm:
-		body = statusTitleStyle.Render(fmt.Sprintf("Found %d courses · %s", len(m.list), filesLabel(m.total))) + "\n\n" +
+		body = titleStyle.Render(fmt.Sprintf("Found %d courses · %s", len(m.list), filesLabel(m.total))) + "\n\n" +
 			m.renderChecklist() + "\n\n" +
 			"Into " + tildify(m.dir) + "\n" +
-			statusMutedStyle.Render("Press enter to start.")
+			mutedStyle.Render("Press enter to start.")
 	case cloneCloning:
 		body = "Cloning into " + tildify(m.dir) + "\n\n" +
 			m.renderProgress() + "\n\n" +
 			m.renderChecklist() + "\n\n" +
-			statusMutedStyle.Render("↓ "+truncate(m.current, max(10, m.sess.width-8)))
+			mutedStyle.Render("↓ "+truncate(m.current, max(10, m.sess.width-8)))
 
 	case cloneDone:
-		body = cloneAccentStyle.Render("✓ ") +
-			statusTitleStyle.Render(fmt.Sprintf("Cloned %d courses · %s", len(m.list), filesLabel(m.total))) + "\n" +
-			statusMutedStyle.Render("into "+tildify(m.dir)) + "\n\n" +
+		body = accentStyle.Render("✓ ") +
+			titleStyle.Render(fmt.Sprintf("Cloned %d courses · %s", len(m.list), filesLabel(m.total))) + "\n" +
+			mutedStyle.Render("into "+tildify(m.dir)) + "\n\n" +
 			m.renderChecklist()
 
 	case cloneFailed:
 		errText := lipgloss.NewStyle().Width(max(10, m.sess.width-4)).Render(m.err.Error())
-		body = cloneAccentStyle.Render("✗ ") + statusTitleStyle.Render("Clone failed") + "\n\n" + errText
+		body = accentStyle.Render("✗ ") + titleStyle.Render("Clone failed") + "\n\n" + errText
 		if len(m.list) > 0 { // empty when fetching failed
 			body += "\n\n" + m.renderChecklist()
 		}
@@ -148,7 +146,7 @@ func (m *cloneScreen) renderProgress() string {
 		percent = float64(m.done) / float64(m.total)
 	}
 	return m.bar.ViewAs(percent) + " " +
-		statusMutedStyle.Render(fmt.Sprintf("%d / %d files %3.0f%%", m.done, m.total, percent*100))
+		mutedStyle.Render(fmt.Sprintf("%d / %d files %3.0f%%", m.done, m.total, percent*100))
 }
 
 func (m *cloneScreen) renderChecklist() string {
@@ -167,10 +165,10 @@ func (m *cloneScreen) renderChecklist() string {
 	var lines []string
 	for i := start; i < end; i++ {
 		icon, count := m.courseStatus(i)
-		lines = append(lines, icon+" "+nameStyle.Render(truncate(m.list[i].name, nameWidth))+" "+statusMutedStyle.Render(count))
+		lines = append(lines, icon+" "+nameStyle.Render(truncate(m.list[i].name, nameWidth))+" "+mutedStyle.Render(count))
 	}
 	if hidden := len(m.list) - (end - start); hidden > 0 {
-		lines = append(lines, statusMutedStyle.Render(fmt.Sprintf("  ... %d more", hidden)))
+		lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ... %d more", hidden)))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -181,17 +179,17 @@ func (m *cloneScreen) courseStatus(i int) (icon, count string) {
 
 	switch {
 	case m.state == cloneConfirm:
-		return statusMutedStyle.Render("·"), filesLabel(c.total)
+		return mutedStyle.Render("·"), filesLabel(c.total)
 	case m.state == cloneDone, i < m.active:
-		return cloneAccentStyle.Render("✓"), filesLabel(c.total)
+		return accentStyle.Render("✓"), filesLabel(c.total)
 	case i == m.active && m.started && m.state == cloneCloning:
-		return cloneAccentStyle.Render(strings.TrimSpace(m.spinner.View())), progress
+		return accentStyle.Render(strings.TrimSpace(m.spinner.View())), progress
 	case i == m.active && m.started && m.state == cloneFailed:
-		return cloneAccentStyle.Render("✗"), progress
+		return accentStyle.Render("✗"), progress
 	case m.state == cloneFailed:
-		return statusMutedStyle.Render("·"), "not started"
+		return mutedStyle.Render("·"), "not started"
 	default:
-		return statusMutedStyle.Render("·"), filesLabel(c.total)
+		return mutedStyle.Render("·"), filesLabel(c.total)
 	}
 }
 
