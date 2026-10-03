@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
 	"lectern/core"
 	"lectern/tui"
@@ -154,7 +153,7 @@ func (c *CLI) handleStatus() {
 
 	state := report.State
 	fmt.Printf("%-12s%s\n", "Workspace", report.Root)
-	fmt.Printf("%-12s%s (%s)\n", "Last sync", state.LastSync.Format("2006-01-02 15:04"), humanAgo(state.LastSync))
+	fmt.Printf("%-12s%s (%s)\n", "Last sync", state.LastSync.Format("2006-01-02 15:04"), core.HumanAgo(state.LastSync))
 	fmt.Printf("%-12s%d across %d courses\n", "Files", report.TotalFiles, len(report.Courses))
 
 	for _, course := range report.Courses {
@@ -170,21 +169,6 @@ func (c *CLI) handleStatus() {
 		fmt.Printf("  %-11s%d\n", "sections", course.Sections)
 		fmt.Printf("  %-11s%d\n", "files", len(course.Files))
 		printFileColumns(course.Files, 2)
-	}
-}
-
-func humanAgo(t time.Time) string {
-	d := time.Since(t)
-
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
 }
 

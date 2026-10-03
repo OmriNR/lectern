@@ -105,7 +105,7 @@ func (a app) newScreen(id screenID) screen {
 	case scrClone:
 		return newPlaceholderScreen("Clone")
 	case scrStatus:
-		return newPlaceholderScreen("Status")
+		return newStatusScreen(a.sess)
 	case scrConfig:
 		return newConfigScreen(a.sess)
 	default:

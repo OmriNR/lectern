@@ -38,6 +38,10 @@ type WorkspaceState struct {
 	Courses		[]CourseState		`json:"courses"`
 }
 
+// ErrNoWorkspace means no .moodle folder was found in the directory or any of
+// its parents.
+var ErrNoWorkspace = errors.New("not a lectern workspace (no .moodle folder)")
+
 type WorkspaceManager struct {}
 
 func NewWorkspaceManager() *WorkspaceManager {
@@ -194,7 +198,7 @@ func (w *WorkspaceManager) FindRoot(startDIr string) (string, error) {
 
 		parent := filepath.Dir(curr)
 		if parent == curr {
-			return "", errors.New("Moodle workspace is not recognized (No .moodle folder)")
+			return "", ErrNoWorkspace
 		}
 		curr = parent
 	}
