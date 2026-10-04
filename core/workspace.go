@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"encoding/json"
@@ -45,10 +45,14 @@ type CourseState struct {
 }
 
 type WorkspaceState struct {
-	LastSync time.Time           `json:"last_sync"`
-	Courses  map[int]CourseState `json:"courses"`
-	Version  int64               `json:"version"`
+	LastSync time.Time         `json:"last_sync"`
+	Files    map[int]FileState `json:"files"`
+	Courses  []CourseState     `json:"courses"`
 }
+
+// ErrNoWorkspace means no .moodle folder was found in the directory or any of
+// its parents.
+var ErrNoWorkspace = errors.New("not a lectern workspace (no .moodle folder)")
 
 type WorkspaceManager struct{}
 
@@ -62,11 +66,23 @@ type FileDownloader interface {
 	DownloadFile(fileURL string) ([]byte, error)
 }
 
-// FileKey builds the stable key a file is stored under in SectionState.Files.
-// Moodle has no single file ID here, and one module can hold several files,
-// so the key combines the module ID with the file's path and name.
-func FileKey(file SectionFile) string {
-	return fmt.Sprintf("%d%s%s", file.ModuleID, file.Content.FilePath, file.Content.FileName)
+type CloneEventKind int
+
+const (
+	CloneCourseCreated CloneEventKind = iota
+	CloneSectionCreated
+	CloneFileDownloaded
+)
+
+// CloneEvent reports InitWorkspace progress. FilesDone/FilesTotal let callers
+// render a progress bar.
+type CloneEvent struct {
+	Kind       CloneEventKind
+	Course     string
+	Section    string
+	File       string
+	FilesDone  int
+	FilesTotal int
 }
 
 func (w *WorkspaceManager) SanitizeName(name string) string {
@@ -83,7 +99,17 @@ func (w *WorkspaceManager) SanitizeName(name string) string {
 	return clean
 }
 
-func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, downloader FileDownloader) error {
+func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, downloader FileDownloader, onEvent func(CloneEvent)) error {
+	if onEvent == nil {
+		onEvent = func(CloneEvent) {}
+	}
+
+	filesTotal := 0
+	for _, course := range courses {
+		for _, sec := range course.Sections {
+			filesTotal += len(sec.GetFiles())
+		}
+	}
 
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return fmt.Errorf("Failed creating dest folder: %w", err)
@@ -109,7 +135,7 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, dow
 			return fmt.Errorf("Failed creating course %s: %w", course.DisplayName, err)
 		}
 
-		fmt.Printf("course created %s\n", courseFolder)
+		onEvent(CloneEvent{Kind: CloneCourseCreated, Course: courseFolder, FilesDone: nextFileID - 1, FilesTotal: filesTotal})
 
 		courseState := CourseState{
 			ID:          course.ID,
@@ -132,7 +158,7 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, dow
 				return fmt.Errorf("Failed creating section %s: %w", secFolder, err)
 			}
 
-			fmt.Printf("└── %s\n", secFolder)
+			onEvent(CloneEvent{Kind: CloneSectionCreated, Course: courseFolder, Section: secFolder, FilesDone: nextFileID - 1, FilesTotal: filesTotal})
 
 			sectionState := SectionState{
 				ID:     sec.ID,
@@ -155,20 +181,20 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, dow
 					return fmt.Errorf("Failed writing file %s: %w", file.Content.FileName, err)
 				}
 
-				sectionState.Files[FileKey(file)] = FileState{
-					Name:         file.Content.FileName,
-					TimeModified: file.Content.TimeModified,
-					ModuleID:     int64(file.ModuleID),
-					Path:         fileRelPath,
+				initialState.Files[nextFileID] = FileState{
+					ID:           nextFileID,
+					Name:         file.FileName,
+					TimeModified: file.TimeModified,
+					Path:         filePath,
+					CourseID:     course.ID,
 				}
+				nextFileID++
 
-				fmt.Printf("    - %s\n", fileName)
+				onEvent(CloneEvent{Kind: CloneFileDownloaded, Course: courseFolder, Section: secFolder, File: fileName, FilesDone: nextFileID - 1, FilesTotal: filesTotal})
 			}
-
-			courseState.Sections[strconv.Itoa(sec.ID)] = sectionState
 		}
 
-		initialWorkspace.Courses[courseState.ID] = courseState
+		initialState.Courses = append(initialState.Courses, courseState)
 	}
 
 	if err := w.SaveState(targetDir, &initialWorkspace); err != nil {
@@ -210,7 +236,7 @@ func (w *WorkspaceManager) FindRoot(startDIr string) (string, error) {
 
 		parent := filepath.Dir(curr)
 		if parent == curr {
-			return "", errors.New("Moodle workspace is not recognized (No .moodle folder)")
+			return "", ErrNoWorkspace
 		}
 		curr = parent
 	}
