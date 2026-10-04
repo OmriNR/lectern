@@ -255,11 +255,8 @@ func (m *statusScreen) renderCourses(width int) string {
 		b.WriteString("  " + titleStyle.Width(titleWidth).Render(truncate(title, titleWidth)) +
 			" " + mutedStyle.Render(count) + "\n")
 
-		location := c.Path
-		if rel, err := filepath.Rel(m.report.Root, c.Path); err == nil {
-			location = rel
-		}
-		info := fmt.Sprintf("%s/ · %d sections", location, c.Sections)
+		// Course paths in the state are already relative to the workspace root.
+		info := fmt.Sprintf("%s/ · %d sections", c.Path, len(c.Sections))
 		b.WriteString("    " + mutedStyle.Render(truncate(info, inner-2)) + "\n")
 
 		if len(c.Files) == 0 {

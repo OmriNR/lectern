@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"lectern/core"
@@ -151,32 +152,20 @@ func (c *CLI) handleSync() {
 		return
 	}
 
-	report, err := c.svc.LoadStatus(currentDir)
+	report, err := c.svc.CheckSync(currentDir)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
-	state, err := c.workspace.LoadState(root)
-	if err != nil {
-		fmt.Printf("Error loading sync file: %v\n", err)
-		return
+	state := report.State
+	fmt.Printf("%-12s%s (%s)\n", "Last sync", state.LastSync.Format("2006-01-02 15:04"), core.HumanAgo(state.LastSync))
+
+	for _, course := range report.NewCourses {
+		fmt.Printf("%v - %s : This course is new\n", course.ID, course.DisplayName)
 	}
-
-	fmt.Printf("%-12s%s (%s)\n", "Last sync", state.LastSync.Format("2006-01-02 15:04"), humanAgo(state.LastSync))
-
-	courses, err := c.client.GetUserCourses()
-	if err != nil {
-		fmt.Printf("Error fetching courses: %v\n", err)
-		return
-	}
-
-	for _, course := range courses {
-		if c.workspace.CheckIfCourseNew(state, course) {
-			fmt.Printf("%v - %s : This course is new\n", course.ID, course.DisplayName)
-		} else if c.workspace.CheckIfHasNewSections(state, course) {
-			fmt.Printf("%v - %s : This course has new sections\n", course.ID, course.DisplayName)
-		}
+	for _, course := range report.CoursesWithNewSections {
+		fmt.Printf("%v - %s : This course has new sections\n", course.ID, course.DisplayName)
 	}
 }
 
@@ -207,8 +196,8 @@ func (c *CLI) handleStatus() {
 		}
 		fmt.Println(title)
 
-		fmt.Printf("  %-11s%s\n", "location", course.Path)
-		fmt.Printf("  %-11s%d\n", "sections", course.Sections)
+		fmt.Printf("  %-11s%s\n", "location", filepath.Join(report.Root, course.Path))
+		fmt.Printf("  %-11s%d\n", "sections", len(course.Sections))
 		fmt.Printf("  %-11s%d\n", "files", len(course.Files))
 		printFileColumns(course.Files, 2)
 	}

@@ -138,21 +138,61 @@ func (s *Service) LoadStatus(startDir string) (*StatusReport, error) {
 	}
 
 	report := &StatusReport{
-		Root:       root,
-		State:      state,
-		TotalFiles: len(state.Files),
+		Root:  root,
+		State: state,
 	}
 
 	for _, course := range state.Courses {
 		var names []string
-		for _, f := range state.Files {
-			if f.CourseID == course.ID {
+		for _, sec := range course.Sections {
+			for _, f := range sec.Files {
 				names = append(names, filepath.Base(f.Path))
 			}
 		}
 		sort.Strings(names)
 
+		report.TotalFiles += len(names)
 		report.Courses = append(report.Courses, CourseReport{CourseState: course, Files: names})
+	}
+
+	sort.Slice(report.Courses, func(i, j int) bool {
+		return report.Courses[i].DisplayName < report.Courses[j].DisplayName
+	})
+
+	return report, nil
+}
+
+type SyncReport struct {
+	Root                   string
+	State                  *WorkspaceState
+	NewCourses             []Course
+	CoursesWithNewSections []Course
+}
+
+func (s *Service) CheckSync(startDir string) (*SyncReport, error) {
+	root, err := s.workspace.FindRoot(startDir)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't find root: %w", err)
+	}
+
+	state, err := s.workspace.LoadState(root)
+	if err != nil {
+		return nil, fmt.Errorf("loading sync file: %w", err)
+	}
+
+	courses, err := s.FetchCourses()
+	if err != nil {
+		return nil, err
+	}
+
+	report := &SyncReport{Root: root, State: state}
+
+	for _, course := range courses {
+		if s.workspace.CheckIfCourseNew(state, course) {
+			report.NewCourses = append(report.NewCourses, course)
+		} else if s.workspace.CheckIfHasNewSections(state, course) {
+			report.CoursesWithNewSections = append(report.CoursesWithNewSections, course)
+		}
 	}
 
 	return report, nil
