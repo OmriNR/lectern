@@ -252,6 +252,99 @@ func (w *WorkspaceManager) FindRoot(startDIr string) (string, error) {
 	}
 }
 
+func (w *WorkspaceManager) checkIfHasNewFiles(state *WorkspaceState, course Course) bool {
+	for _, section := range course.Sections {
+		secState, ok := state.Courses[course.ID].Sections[strconv.Itoa(section.ID)]
+		if !ok {
+			continue
+		}
+
+		for _, file := range section.GetFiles() {
+			if _, ok := secState.Files[FileKey(file)]; !ok {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (w *WorkspaceManager) SyncCourse(rootDir string, state *WorkspaceState, course Course, downloader FileDownloader) error {
+	courseState, ok := state.Courses[course.ID]
+	if !ok {
+		courseState = CourseState{
+			ID:          course.ID,
+			ShortName:   course.ShortName,
+			DisplayName: course.DisplayName,
+			Path:        w.SanitizeName(course.DisplayName),
+		}
+	}
+	if courseState.Sections == nil {
+		courseState.Sections = make(map[string]SectionState)
+	}
+
+	if err := os.MkdirAll(filepath.Join(rootDir, courseState.Path), 0755); err != nil {
+		return fmt.Errorf("Failed creating course %s: %w", course.DisplayName, err)
+	}
+
+	for i, sec := range course.Sections {
+		secKey := strconv.Itoa(sec.ID)
+
+		sectionState, ok := courseState.Sections[secKey]
+		if !ok {
+			// Same folder naming as InitWorkspace.
+			secTitle := strings.TrimSpace(sec.Name)
+			if secTitle == "" {
+				secTitle = fmt.Sprintf("section_%d", i+1)
+			}
+			sectionState = SectionState{
+				ID:     sec.ID,
+				Number: int64(sec.Section),
+				Name:   sec.Name,
+				Folder: fmt.Sprintf("%02d_%s", i+1, w.SanitizeName(secTitle)),
+			}
+		}
+		if sectionState.Files == nil {
+			sectionState.Files = make(map[string]FileState)
+		}
+
+		secRelPath := filepath.Join(courseState.Path, sectionState.Folder)
+		if err := os.MkdirAll(filepath.Join(rootDir, secRelPath), 0755); err != nil {
+			return fmt.Errorf("Failed creating section %s: %w", sectionState.Folder, err)
+		}
+
+		for _, file := range sec.GetFiles() {
+			fileKey := FileKey(file)
+			if _, ok := sectionState.Files[fileKey]; ok {
+				continue
+			}
+
+			fileRelPath := filepath.Join(secRelPath, w.SanitizeName(file.Content.FileName))
+
+			data, err := downloader.DownloadFile(file.Content.FileURL)
+			if err != nil {
+				return fmt.Errorf("Failed downloading file %s: %w", file.Content.FileName, err)
+			}
+
+			if err := os.WriteFile(filepath.Join(rootDir, fileRelPath), data, 0644); err != nil {
+				return fmt.Errorf("Failed writing file %s: %w", file.Content.FileName, err)
+			}
+
+			sectionState.Files[fileKey] = FileState{
+				Name:         file.Content.FileName,
+				TimeModified: file.Content.TimeModified,
+				ModuleID:     int64(file.ModuleID),
+				Path:         fileRelPath,
+			}
+		}
+
+		courseState.Sections[secKey] = sectionState
+	}
+
+	state.Courses[course.ID] = courseState
+	return nil
+}
+
 func (w *WorkspaceManager) LoadState(rootDIr string) (*WorkspaceState, error) {
 	statePath := filepath.Join(rootDIr, MetaDirName, StateFIleName)
 	data, err := os.ReadFile(statePath)

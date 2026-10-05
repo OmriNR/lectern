@@ -126,7 +126,7 @@ func (a app) newScreen(id screenID) screen {
 	case scrStatus:
 		return newStatusScreen(a.sess)
 	case scrSync:
-		return newSyncScreen("sync")
+		return newSyncScreen(a.sess)
 	case scrConfig:
 		return newConfigScreen(a.sess)
 	default:

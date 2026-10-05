@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 )
 
 // This file holds lectern's operations without any terminal I/O, so both the
@@ -167,6 +168,7 @@ type SyncReport struct {
 	State                  *WorkspaceState
 	NewCourses             []Course
 	CoursesWithNewSections []Course
+	CoursesWithNewFiles    []Course
 }
 
 func (s *Service) CheckSync(startDir string) (*SyncReport, error) {
@@ -192,10 +194,45 @@ func (s *Service) CheckSync(startDir string) (*SyncReport, error) {
 			report.NewCourses = append(report.NewCourses, course)
 		} else if s.workspace.CheckIfHasNewSections(state, course) {
 			report.CoursesWithNewSections = append(report.CoursesWithNewSections, course)
+		} else if s.workspace.checkIfHasNewFiles(state, course) {
+			report.CoursesWithNewFiles = append(report.CoursesWithNewFiles, course)
 		}
 	}
 
 	return report, nil
+}
+
+func (s *Service) UpdateCourses(startDir string, courses []Course) error {
+	if !s.IsConnected() {
+		return ErrNotConnected
+	}
+
+	root, err := s.workspace.FindRoot(startDir)
+	if err != nil {
+		return fmt.Errorf("couldn't find root: %w", err)
+	}
+
+	state, err := s.workspace.LoadState(root)
+	if err != nil {
+		return fmt.Errorf("loading sync file: %w", err)
+	}
+
+	if state.Courses == nil {
+		state.Courses = make(map[int]CourseState)
+	}
+
+	for _, course := range courses {
+		if err := s.workspace.SyncCourse(root, state, course, s.client); err != nil {
+			return fmt.Errorf("updating %s: %w", course.DisplayName, err)
+		}
+
+		state.LastSync = time.Now()
+		if err := s.workspace.SaveState(root, state); err != nil {
+			return fmt.Errorf("saving sync file: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (s *Service) ClearConfig() error {

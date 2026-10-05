@@ -167,6 +167,9 @@ func (c *CLI) handleSync() {
 	for _, course := range report.CoursesWithNewSections {
 		fmt.Printf("%v - %s : This course has new sections\n", course.ID, course.DisplayName)
 	}
+	for _, course := range report.CoursesWithNewFiles {
+		fmt.Printf("%v - %s : This course has new files\n", course.ID, course.DisplayName)
+	}
 }
 
 func (c *CLI) handleStatus() {
