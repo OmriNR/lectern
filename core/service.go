@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 )
 
 // This file holds lectern's operations without any terminal I/O, so both the
@@ -138,24 +139,100 @@ func (s *Service) LoadStatus(startDir string) (*StatusReport, error) {
 	}
 
 	report := &StatusReport{
-		Root:       root,
-		State:      state,
-		TotalFiles: len(state.Files),
+		Root:  root,
+		State: state,
 	}
 
 	for _, course := range state.Courses {
 		var names []string
-		for _, f := range state.Files {
-			if f.CourseID == course.ID {
+		for _, sec := range course.Sections {
+			for _, f := range sec.Files {
 				names = append(names, filepath.Base(f.Path))
 			}
 		}
 		sort.Strings(names)
 
+		report.TotalFiles += len(names)
 		report.Courses = append(report.Courses, CourseReport{CourseState: course, Files: names})
 	}
 
+	sort.Slice(report.Courses, func(i, j int) bool {
+		return report.Courses[i].DisplayName < report.Courses[j].DisplayName
+	})
+
 	return report, nil
+}
+
+type SyncReport struct {
+	Root                   string
+	State                  *WorkspaceState
+	NewCourses             []Course
+	CoursesWithNewSections []Course
+	CoursesWithNewFiles    []Course
+}
+
+func (s *Service) CheckSync(startDir string) (*SyncReport, error) {
+	root, err := s.workspace.FindRoot(startDir)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't find root: %w", err)
+	}
+
+	state, err := s.workspace.LoadState(root)
+	if err != nil {
+		return nil, fmt.Errorf("loading sync file: %w", err)
+	}
+
+	courses, err := s.FetchCourses()
+	if err != nil {
+		return nil, err
+	}
+
+	report := &SyncReport{Root: root, State: state}
+
+	for _, course := range courses {
+		if s.workspace.CheckIfCourseNew(state, course) {
+			report.NewCourses = append(report.NewCourses, course)
+		} else if s.workspace.CheckIfHasNewSections(state, course) {
+			report.CoursesWithNewSections = append(report.CoursesWithNewSections, course)
+		} else if s.workspace.checkIfHasNewFiles(state, course) {
+			report.CoursesWithNewFiles = append(report.CoursesWithNewFiles, course)
+		}
+	}
+
+	return report, nil
+}
+
+func (s *Service) UpdateCourses(startDir string, courses []Course) error {
+	if !s.IsConnected() {
+		return ErrNotConnected
+	}
+
+	root, err := s.workspace.FindRoot(startDir)
+	if err != nil {
+		return fmt.Errorf("couldn't find root: %w", err)
+	}
+
+	state, err := s.workspace.LoadState(root)
+	if err != nil {
+		return fmt.Errorf("loading sync file: %w", err)
+	}
+
+	if state.Courses == nil {
+		state.Courses = make(map[int]CourseState)
+	}
+
+	for _, course := range courses {
+		if err := s.workspace.SyncCourse(root, state, course, s.client); err != nil {
+			return fmt.Errorf("updating %s: %w", course.DisplayName, err)
+		}
+
+		state.LastSync = time.Now()
+		if err := s.workspace.SaveState(root, state); err != nil {
+			return fmt.Errorf("saving sync file: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (s *Service) ClearConfig() error {

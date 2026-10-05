@@ -218,6 +218,13 @@ type ModuleContent struct {
 	TimeModified int64  `json:"timemodified"`
 }
 
+// SectionFile is a downloadable file in a section, paired with the ID of
+// the course module it belongs to (needed to build a stable state key).
+type SectionFile struct {
+	ModuleID int
+	Content  ModuleContent
+}
+
 type Module struct {
 	ID       int             `json:"id"`
 	Name     string          `json:"name"`
@@ -364,22 +371,20 @@ func (c *MoodleClient) DownloadFile(fileURL string) ([]byte, error) {
 	return body, nil
 }
 
-// syntheticContentName is the filename Moodle's mod_page always uses for
-// the auto-generated file that mirrors a page's HTML body (see
-// page_export_contents() in mod/page/lib.php). It isn't a real uploaded
-// file, so it's excluded - but real files attached within a page (or any
-// other module) keep their own filenames and are still included.
 const syntheticContentName = "index.html"
 
-func (s Section) GetFiles() []ModuleContent {
-	var files []ModuleContent
+func (s Section) GetFiles() []SectionFile {
+	var files []SectionFile
 
 	for _, mod := range s.Modules {
 		for _, content := range mod.Contents {
 			if content.FileURL == "" || content.FileName == syntheticContentName {
 				continue
 			}
-			files = append(files, content)
+			files = append(files, SectionFile{
+				ModuleID: mod.ID,
+				Content:  content,
+			})
 		}
 	}
 	return files

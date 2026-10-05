@@ -31,6 +31,24 @@ if ($spec === null) {
 $admin = $DB->get_record('user', ['username' => 'admin'], '*', MUST_EXIST);
 \core\session\manager::set_user($admin);
 
+// lectern logs in via login/token.php with the moodle_mobile_app service,
+// which a fresh Moodle ships with disabled.
+set_config('enablewebservices', 1);
+set_config('enablemobilewebservice', 1);
+$protocols = array_filter(explode(',', (string) get_config('core', 'webserviceprotocols')));
+if (!in_array('rest', $protocols, true)) {
+    $protocols[] = 'rest';
+    set_config('webserviceprotocols', implode(',', $protocols));
+}
+$DB->set_field('external_services', 'enabled', 1, ['shortname' => MOODLE_OFFICIAL_MOBILE_SERVICE]);
+// Enabling mobile services through the admin UI also grants authenticated
+// users webservice/rest:use; set_config alone doesn't, and without it every
+// REST call fails with "Access control exception".
+$syscontext = context_system::instance();
+assign_capability('webservice/rest:use', CAP_ALLOW, $CFG->defaultuserroleid, $syscontext->id, true);
+$syscontext->mark_dirty();
+echo "Web services: enabled (REST + mobile service)\n";
+
 $generator = new testing_data_generator();
 $fs = get_file_storage();
 

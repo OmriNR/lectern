@@ -20,6 +20,7 @@ const (
 	scrConnect
 	scrClone
 	scrStatus
+	scrSync
 	scrConfig
 )
 
@@ -124,6 +125,8 @@ func (a app) newScreen(id screenID) screen {
 		return newCloneScreen(a.sess)
 	case scrStatus:
 		return newStatusScreen(a.sess)
+	case scrSync:
+		return newSyncScreen(a.sess)
 	case scrConfig:
 		return newConfigScreen(a.sess)
 	default:

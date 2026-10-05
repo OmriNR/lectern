@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"lectern/core"
@@ -51,6 +52,12 @@ func (c *CLI) dispatch(args []string) int {
 		c.handleStatus()
 	case "config":
 		c.handleConfig(args[1:])
+	case "sync":
+		if !c.requireConnected() {
+			return 1
+		}
+
+		c.handleSync()
 	case "update":
 		c.handleShellUpdate()
 	case "ez":
@@ -138,6 +145,33 @@ func (c *CLI) handleClone(args []string) {
 	fmt.Println("Cloning finished successfully!")
 }
 
+func (c *CLI) handleSync() {
+	currentDir, err := os.Getwd()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	report, err := c.svc.CheckSync(currentDir)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	state := report.State
+	fmt.Printf("%-12s%s (%s)\n", "Last sync", state.LastSync.Format("2006-01-02 15:04"), core.HumanAgo(state.LastSync))
+
+	for _, course := range report.NewCourses {
+		fmt.Printf("%v - %s : This course is new\n", course.ID, course.DisplayName)
+	}
+	for _, course := range report.CoursesWithNewSections {
+		fmt.Printf("%v - %s : This course has new sections\n", course.ID, course.DisplayName)
+	}
+	for _, course := range report.CoursesWithNewFiles {
+		fmt.Printf("%v - %s : This course has new files\n", course.ID, course.DisplayName)
+	}
+}
+
 func (c *CLI) handleStatus() {
 	currentDir, err := os.Getwd()
 	if err != nil {
@@ -165,8 +199,8 @@ func (c *CLI) handleStatus() {
 		}
 		fmt.Println(title)
 
-		fmt.Printf("  %-11s%s\n", "location", course.Path)
-		fmt.Printf("  %-11s%d\n", "sections", course.Sections)
+		fmt.Printf("  %-11s%s\n", "location", filepath.Join(report.Root, course.Path))
+		fmt.Printf("  %-11s%d\n", "sections", len(course.Sections))
 		fmt.Printf("  %-11s%d\n", "files", len(course.Files))
 		printFileColumns(course.Files, 2)
 	}
