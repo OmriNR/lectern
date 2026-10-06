@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"lectern/core"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -24,11 +27,15 @@ const (
 	courseFailed
 )
 
-type courseChooseMsg struct{ courses []core.CourseReport }
+type courseChooseMsg struct {
+	root    string
+	courses []core.CourseReport
+}
 type courseMenuMsg struct{ course core.CourseReport }
 type courseSectionMsg struct{ section core.SectionState }
 type courseUploadFileMsg struct{}
 type courseFailMsg struct{ err error }
+type courseOpenFailMsg struct{ err error }
 
 var (
 	courseKeyMove   = key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑/↓", "move"))
@@ -36,6 +43,7 @@ var (
 	courseKeyAll    = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all"))
 	courseKeyUpdate = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "update"))
 	courseKeyMenu   = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "menu"))
+	courseKeyOpen   = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open"))
 	courseKeyRetry  = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "try again"))
 	courseKeyBack   = key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back"))
 )
@@ -53,7 +61,9 @@ type courseScreen struct {
 	courses         []core.CourseReport
 	selectedCourse  core.CourseReport
 	selectedSection core.SectionState
+	root            string // workspace root; file paths are relative to it
 	cursor          int
+	openErr         error
 	err             error
 }
 
@@ -75,7 +85,29 @@ func loadCoursesCmd(svc *core.Service) tea.Cmd {
 		if err != nil {
 			return courseFailMsg{err}
 		}
-		return courseChooseMsg{courses: report.Courses}
+		return courseChooseMsg{root: report.Root, courses: report.Courses}
+	}
+}
+
+// openFileCmd opens path in the system's default app for its type, outside
+// the terminal.
+func openFileCmd(path string) tea.Cmd {
+	return func() tea.Msg {
+		var cmd *exec.Cmd
+		switch runtime.GOOS {
+		case "darwin":
+			cmd = exec.Command("open", path)
+		case "windows":
+			cmd = exec.Command("cmd", "/c", "start", "", path)
+		default:
+			cmd = exec.Command("xdg-open", path)
+		}
+
+		if err := cmd.Start(); err != nil {
+			return courseOpenFailMsg{err}
+		}
+		go cmd.Wait() // reap the opener without blocking the UI
+		return nil
 	}
 }
 
@@ -171,11 +203,17 @@ func (m *courseScreen) handleKey(msg tea.KeyMsg) (screen, tea.Cmd) {
 
 	case courseSection:
 		files := m.files()
+		m.openErr = nil
 		switch key {
 		case "esc":
 			m.state = courseMenu
 			m.cursor = m.sectionIndex(m.selectedSection.ID)
 			return m, nil
+		case "enter":
+			if len(files) == 0 {
+				return m, nil
+			}
+			return m, openFileCmd(filepath.Join(m.root, files[m.cursor].Path))
 		default:
 			m.moveCursor(key, len(files))
 		}
@@ -251,6 +289,7 @@ func (m *courseScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
 		if !m.loading() {
 			return m, nil
 		}
+		m.root = msg.root
 		m.courses = msg.courses
 		m.cursor = 0
 		return m, nil
@@ -283,6 +322,12 @@ func (m *courseScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+
+	case courseOpenFailMsg:
+		if m.state == courseSection {
+			m.openErr = msg.err
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -336,6 +381,9 @@ func (m *courseScreen) View() string {
 		} else {
 			body += m.renderList(items)
 		}
+		if m.openErr != nil {
+			body += "\n\n" + accentStyle.Render("✗ ") + "Couldn't open the file: " + m.openErr.Error()
+		}
 
 	case courseUpload:
 		body = titleStyle.Render("Upload") + "\n\n" +
@@ -358,8 +406,10 @@ func (m *courseScreen) View() string {
 
 func (m *courseScreen) ShortHelp() []key.Binding {
 	switch m.state {
-	case courseChooseMenu, courseMenu, courseSection:
+	case courseChooseMenu, courseMenu:
 		return []key.Binding{courseKeyMove, courseKeyToggle, courseKeyUpdate, courseKeyBack}
+	case courseSection:
+		return []key.Binding{courseKeyMove, courseKeyOpen, courseKeyBack}
 	case courseUpload:
 		return []key.Binding{courseKeyBack}
 	case courseFailed:
