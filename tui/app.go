@@ -19,7 +19,7 @@ const (
 	scrMenu screenID = iota
 	scrConnect
 	scrClone
-	scrStatus
+	scrCourses
 	scrSync
 	scrConfig
 )
@@ -123,8 +123,8 @@ func (a app) newScreen(id screenID) screen {
 		return newConnectScreen(a.sess)
 	case scrClone:
 		return newCloneScreen(a.sess)
-	case scrStatus:
-		return newStatusScreen(a.sess)
+	case scrCourses:
+		return newCourseScreen(a.sess)
 	case scrSync:
 		return newSyncScreen(a.sess)
 	case scrConfig:
