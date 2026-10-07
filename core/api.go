@@ -373,12 +373,16 @@ func (c *MoodleClient) DownloadFile(fileURL string) ([]byte, error) {
 
 const syntheticContentName = "index.html"
 
+func IsDownloadable(content ModuleContent) bool {
+	return content.FileURL != "" && content.FileName != syntheticContentName
+}
+
 func (s Section) GetFiles() []SectionFile {
 	var files []SectionFile
 
 	for _, mod := range s.Modules {
 		for _, content := range mod.Contents {
-			if content.FileURL == "" || content.FileName == syntheticContentName {
+			if !IsDownloadable(content) {
 				continue
 			}
 			files = append(files, SectionFile{

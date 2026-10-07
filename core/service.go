@@ -227,6 +227,7 @@ func (s *Service) UpdateCourses(startDir string, courses []Course) error {
 		}
 
 		state.LastSync = time.Now()
+		state.Version = StateVersion
 		if err := s.workspace.SaveState(root, state); err != nil {
 			return fmt.Errorf("saving sync file: %w", err)
 		}
