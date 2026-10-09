@@ -336,7 +336,7 @@ func (s *Service) FetchAssignments(startDir string) ([]Assignment, error) {
 	}
 
 	sort.SliceStable(assignments, func(i, j int) bool {
-		di, dj := assignments[i].DueDate(), assignments[i].DueDate()
+		di, dj := assignments[i].DueDate(), assignments[j].DueDate()
 		if di.IsZero() != dj.IsZero() {
 			return dj.IsZero()
 		}

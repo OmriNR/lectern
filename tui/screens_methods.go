@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,4 +32,36 @@ func tildify(path string) string {
 		return "~" + path[len(home):]
 	}
 	return path
+}
+
+func renderCursorList(items [][2]string, cursor int, sess *session) string {
+	rows := max(1, sess.height-10)
+	start, end := 0, len(items)
+
+	if len(items) > rows {
+		start = min(max(0, cursor-rows/2), len(items)-rows)
+		end = start + rows
+	}
+
+	nameWidth := max(10, min(40, sess.width-20))
+	nameStyle := lipgloss.NewStyle().Width(nameWidth)
+
+	var lines []string
+	if start > 0 {
+		lines = append(lines, mutedStyle.Render(fmt.Sprintf(" ...%d more", start)))
+	}
+
+	for i := start; i < end; i++ {
+		pointer, style := " ", nameStyle.Foreground(colorText)
+		if i == cursor {
+			pointer, style = accentStyle.Render("> "), nameStyle.Foreground(colorOrange)
+		}
+		lines = append(lines, pointer+style.Render(truncate(items[i][0], nameWidth))+" "+mutedStyle.Render(items[i][1]))
+	}
+
+	if hidden := len(items) - end; hidden > 0 {
+		lines = append(lines, mutedStyle.Render(fmt.Sprintf(" ... %d more", hidden)))
+	}
+
+	return strings.Join(lines, "\n")
 }
