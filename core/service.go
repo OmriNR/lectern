@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"sync"
 	"time"
 )
 
@@ -227,6 +229,7 @@ func (s *Service) UpdateCourses(startDir string, courses []Course) error {
 		}
 
 		state.LastSync = time.Now()
+		state.Version = StateVersion
 		if err := s.workspace.SaveState(root, state); err != nil {
 			return fmt.Errorf("saving sync file: %w", err)
 		}
@@ -242,4 +245,103 @@ func (s *Service) ClearConfig() error {
 
 	s.client.RestoreSession("", nil)
 	return nil
+}
+
+const maxStatusRequests = 6
+
+func (s *Service) FetchAssignments(startDir string) ([]Assignment, error) {
+
+	if !s.IsConnected() {
+		return nil, ErrNotConnected
+	}
+
+	root, err := s.workspace.FindRoot(startDir)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't find root: %w", err)
+	}
+
+	state, err := s.workspace.LoadState(root)
+
+	if err != nil {
+		return nil, fmt.Errorf("loading sync file: %w", err)
+	}
+
+	courses, err := s.client.GetUserCourses()
+	if err != nil {
+		return nil, fmt.Errorf("fetching courses: %w", err)
+	}
+	var assignments []Assignment
+
+	for _, course := range courses {
+		courseState, ok := state.Courses[course.ID]
+
+		if !ok {
+			continue
+		}
+
+		for _, sec := range course.Sections {
+			secState := courseState.Sections[strconv.Itoa(sec.ID)]
+
+			for _, mod := range sec.Modules {
+				if mod.Assignment == nil {
+					continue
+				}
+
+				path := ""
+				if assignState, ok := secState.Assignments[strconv.Itoa(mod.ID)]; ok {
+					path = filepath.Join(root, courseState.Path, secState.Folder, assignState.Folder)
+				}
+
+				assignments = append(assignments, Assignment{
+					CourseID:   course.ID,
+					CourseName: course.DisplayName,
+					Path:       path,
+					Info:       *mod.Assignment,
+				})
+			}
+		}
+	}
+
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
+	)
+
+	sem := make(chan struct{}, maxStatusRequests)
+
+	for i := range assignments {
+		wg.Add(1)
+		go func(a *Assignment) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			status, err := s.client.GetSubmissionStatus(a.Info.ID)
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("status of %s: %w", a.Info.Name, err)
+				}
+				mu.Unlock()
+				return
+			}
+			a.Status = *status
+		}(&assignments[i])
+	}
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	sort.SliceStable(assignments, func(i, j int) bool {
+		di, dj := assignments[i].DueDate(), assignments[j].DueDate()
+		if di.IsZero() != dj.IsZero() {
+			return dj.IsZero()
+		}
+		return di.Before(dj)
+	})
+
+	return assignments, nil
 }

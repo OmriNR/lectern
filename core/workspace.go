@@ -13,12 +13,19 @@ import (
 )
 
 const (
-	MetaDirName   = ".moodle"
-	StateFIleName = "state.json"
+	MetaDirName      = ".moodle"
+	StateFIleName    = "state.json"
+	SubmissioDirName = "submissions"
 
 	// StateVersion is bumped whenever the state.json layout changes.
-	StateVersion = 2
+	StateVersion = 3
 )
+
+type AssingmentState struct {
+	MoudleID int    `json:"moudle_id"`
+	Name     string `json:"name"`
+	Folder   string `json:"folder"`
+}
 
 type FileState struct {
 	ID           int    `json:"id"`
@@ -29,11 +36,12 @@ type FileState struct {
 }
 
 type SectionState struct {
-	ID     int                  `json:"id"`
-	Number int64                `json:"number"`
-	Name   string               `json:"name"`
-	Folder string               `json:"folder"`
-	Files  map[string]FileState `json:"files"`
+	ID          int                        `json:"id"`
+	Number      int64                      `json:"number"`
+	Name        string                     `json:"name"`
+	Folder      string                     `json:"folder"`
+	Files       map[string]FileState       `json:"files"`
+	Assignments map[string]AssingmentState `json:"assignments"`
 }
 
 type CourseState struct {
@@ -170,35 +178,68 @@ func (w *WorkspaceManager) InitWorkspace(targetDir string, courses []Course, dow
 			onEvent(CloneEvent{Kind: CloneSectionCreated, Course: courseFolder, Section: secFolder, FilesDone: filesDone, FilesTotal: filesTotal})
 
 			sectionState := SectionState{
-				ID:     sec.ID,
-				Number: int64(sec.Section),
-				Name:   sec.Name,
-				Folder: secFolder,
-				Files:  make(map[string]FileState),
+				ID:          sec.ID,
+				Number:      int64(sec.Section),
+				Name:        sec.Name,
+				Folder:      secFolder,
+				Files:       make(map[string]FileState),
+				Assignments: make(map[string]AssingmentState),
 			}
 
-			for _, file := range sec.GetFiles() {
-				fileName := w.SanitizeName(file.Content.FileName)
-				fileRelPath := filepath.Join(secRelPath, fileName)
+			for _, mod := range sec.Modules {
+				destRelPath := secRelPath
 
-				data, err := downloader.DownloadFile(file.Content.FileURL)
-				if err != nil {
-					return fmt.Errorf("Failed downloading file %s: %w", file.Content.FileName, err)
+				if mod.ModName == "assign" {
+					assignState := AssingmentState{
+						MoudleID: mod.ID,
+						Name:     mod.Name,
+						Folder:   w.SanitizeName(mod.Name),
+					}
+
+					assignRelPath := filepath.Join(secRelPath, assignState.Folder)
+					if err := os.MkdirAll(filepath.Join(targetDir, assignRelPath, SubmissioDirName), 0755); err != nil {
+						return fmt.Errorf("Failed creating assignment %s: %w", mod.Name, err)
+					}
+
+					sectionState.Assignments[strconv.Itoa(mod.ID)] = assignState
+					destRelPath = assignRelPath
 				}
 
-				if err := os.WriteFile(filepath.Join(targetDir, fileRelPath), data, 0644); err != nil {
-					return fmt.Errorf("Failed writing file %s: %w", file.Content.FileName, err)
-				}
+				for _, content := range mod.Contents {
+					if !IsDownloadable(content) {
+						continue
+					}
 
-				sectionState.Files[FileKey(file)] = FileState{
-					Name:         file.Content.FileName,
-					TimeModified: file.Content.TimeModified,
-					ModuleID:     int64(file.ModuleID),
-					Path:         fileRelPath,
-				}
-				filesDone++
+					file := SectionFile{ModuleID: mod.ID, Content: content}
+					fileName := w.SanitizeName(content.FileName)
+					fileRelPath := filepath.Join(destRelPath, fileName)
 
-				onEvent(CloneEvent{Kind: CloneFileDownloaded, Course: courseFolder, Section: secFolder, File: fileName, FilesDone: filesDone, FilesTotal: filesTotal})
+					data, err := downloader.DownloadFile(content.FileURL)
+					if err != nil {
+						return fmt.Errorf("Failed downloading file %s: %w", content.FileName, err)
+					}
+
+					if err := os.WriteFile(filepath.Join(targetDir, fileRelPath), data, 0644); err != nil {
+						return fmt.Errorf("Failed writing file %s: %w", content.FileName, err)
+					}
+
+					sectionState.Files[FileKey(file)] = FileState{
+						Name:         content.FileName,
+						TimeModified: content.TimeModified,
+						ModuleID:     int64(mod.ID),
+						Path:         fileRelPath,
+					}
+					filesDone++
+
+					onEvent(CloneEvent{
+						Kind:       CloneFileDownloaded,
+						Course:     courseFolder,
+						Section:    secFolder,
+						File:       fileName,
+						FilesDone:  filesDone,
+						FilesTotal: filesTotal,
+					})
+				}
 			}
 
 			courseState.Sections[strconv.Itoa(sec.ID)] = sectionState
@@ -304,8 +345,13 @@ func (w *WorkspaceManager) SyncCourse(rootDir string, state *WorkspaceState, cou
 				Folder: fmt.Sprintf("%02d_%s", i+1, w.SanitizeName(secTitle)),
 			}
 		}
+
 		if sectionState.Files == nil {
 			sectionState.Files = make(map[string]FileState)
+		}
+
+		if sectionState.Assignments == nil {
+			sectionState.Assignments = make(map[string]AssingmentState)
 		}
 
 		secRelPath := filepath.Join(courseState.Path, sectionState.Folder)
@@ -313,28 +359,71 @@ func (w *WorkspaceManager) SyncCourse(rootDir string, state *WorkspaceState, cou
 			return fmt.Errorf("Failed creating section %s: %w", sectionState.Folder, err)
 		}
 
-		for _, file := range sec.GetFiles() {
-			fileKey := FileKey(file)
-			if _, ok := sectionState.Files[fileKey]; ok {
-				continue
+		for _, mod := range sec.Modules {
+			destRelPath := secRelPath
+
+			if mod.ModName == "assign" {
+				modKey := strconv.Itoa(mod.ID)
+
+				assignState, ok := sectionState.Assignments[modKey]
+				if !ok {
+					assignState = AssingmentState{
+						MoudleID: mod.ID,
+						Name:     mod.Name,
+						Folder:   w.SanitizeName(mod.Name),
+					}
+				}
+
+				assignRelPath := filepath.Join(secRelPath, assignState.Folder)
+				if err := os.MkdirAll(filepath.Join(rootDir, assignRelPath, SubmissioDirName), 0755); err != nil {
+					return fmt.Errorf("Failed creating assignment %s: %w", mod.Name, err)
+				}
+
+				sectionState.Assignments[modKey] = assignState
+				destRelPath = assignRelPath
 			}
 
-			fileRelPath := filepath.Join(secRelPath, w.SanitizeName(file.Content.FileName))
+			for _, content := range mod.Contents {
+				if !IsDownloadable(content) {
+					continue
+				}
 
-			data, err := downloader.DownloadFile(file.Content.FileURL)
-			if err != nil {
-				return fmt.Errorf("Failed downloading file %s: %w", file.Content.FileName, err)
-			}
+				file := SectionFile{ModuleID: mod.ID, Content: content}
+				fileKey := FileKey(file)
+				fileRelPath := filepath.Join(destRelPath, w.SanitizeName(content.FileName))
 
-			if err := os.WriteFile(filepath.Join(rootDir, fileRelPath), data, 0644); err != nil {
-				return fmt.Errorf("Failed writing file %s: %w", file.Content.FileName, err)
-			}
+				if existing, ok := sectionState.Files[fileKey]; ok {
+					if existing.Path == fileRelPath {
+						continue
+					}
 
-			sectionState.Files[fileKey] = FileState{
-				Name:         file.Content.FileName,
-				TimeModified: file.Content.TimeModified,
-				ModuleID:     int64(file.ModuleID),
-				Path:         fileRelPath,
+					err := os.Rename(filepath.Join(rootDir, existing.Path), filepath.Join(rootDir, fileRelPath))
+					if err == nil {
+						existing.Path = fileRelPath
+						sectionState.Files[fileKey] = existing
+						continue
+					}
+
+					if !errors.Is(err, os.ErrNotExist) {
+						return fmt.Errorf("Failed moving file %s: %w", content.FileName, err)
+					}
+				}
+
+				data, err := downloader.DownloadFile(content.FileURL)
+				if err != nil {
+					return fmt.Errorf("Failed downloading file %s: %w", content.FileName, err)
+				}
+
+				if err := os.WriteFile(filepath.Join(rootDir, fileRelPath), data, 0644); err != nil {
+					return fmt.Errorf("Failed writing file %s: %w", content.FileName, err)
+				}
+
+				sectionState.Files[fileKey] = FileState{
+					Name:         content.FileName,
+					TimeModified: content.TimeModified,
+					ModuleID:     int64(mod.ID),
+					Path:         fileRelPath,
+				}
 			}
 		}
 

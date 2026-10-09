@@ -226,10 +226,11 @@ type SectionFile struct {
 }
 
 type Module struct {
-	ID       int             `json:"id"`
-	Name     string          `json:"name"`
-	ModName  string          `json:"modname"`
-	Contents []ModuleContent `json:"contents,omitempty"`
+	ID         int             `json:"id"`
+	Name       string          `json:"name"`
+	ModName    string          `json:"modname"`
+	Contents   []ModuleContent `json:"contents,omitempty"`
+	Assignment *AssignmentInfo `json:"-"`
 }
 
 type Section struct {
@@ -284,10 +285,7 @@ func (c *MoodleClient) GetCourseSections(courseID int) ([]Section, error) {
 		return nil, fmt.Errorf("course sections: bad json: %w\n%s", err, string(body))
 	}
 
-	// core_course_get_contents doesn't expose mod_assign intro attachments
-	// (unlike page/resource/folder, assign has no "contents" of its own) -
-	// fetch them separately and splice them into the matching module.
-	attachmentsByModuleID, err := c.getAssignmentIntroAttachments(courseID)
+	attachmentsByModuleID, err := c.getAssignments(courseID)
 	if err != nil {
 		return nil, err
 	}
@@ -298,8 +296,9 @@ func (c *MoodleClient) GetCourseSections(courseID int) ([]Section, error) {
 			if mod.ModName != "assign" {
 				continue
 			}
-			if attachments, ok := attachmentsByModuleID[mod.ID]; ok {
-				mod.Contents = attachments
+			if info, ok := attachmentsByModuleID[mod.ID]; ok {
+				mod.Contents = info.IntroAttachments
+				mod.Assignment = &info
 			}
 		}
 	}
@@ -307,10 +306,20 @@ func (c *MoodleClient) GetCourseSections(courseID int) ([]Section, error) {
 	return sections, nil
 }
 
-// getAssignmentIntroAttachments returns, per course-module ID, the files
-// attached to an assignment's description (mod_assign_get_assignments is
-// the only web service that exposes these).
-func (c *MoodleClient) getAssignmentIntroAttachments(courseID int) (map[int][]ModuleContent, error) {
+type AssignmentInfo struct {
+	ID                       int             `json:"id"`
+	CMID                     int             `json:"cmid"`
+	Name                     string          `json:"name"`
+	DueDate                  int64           `json:"duedate"`
+	CutOffDate               int64           `json:"cutoffdate"`
+	AllowSubmissionsFromDate int64           `json:"allowsubmissionsfromdate"`
+	NoSubmissions            int             `json:"nosubmissions"`
+	SubmissionsDrafts        int             `json:"submissionsdrafts"`
+	TeamSubmission           int             `json:"grade"`
+	IntroAttachments         []ModuleContent `json:"introattachments"`
+}
+
+func (c *MoodleClient) getAssignments(courseID int) (map[int]AssignmentInfo, error) {
 	params := url.Values{}
 	params.Set("courseids[0]", strconv.Itoa(courseID))
 
@@ -321,24 +330,22 @@ func (c *MoodleClient) getAssignmentIntroAttachments(courseID int) (map[int][]Mo
 
 	var resp struct {
 		Courses []struct {
-			Assignments []struct {
-				CMID             int             `json:"cmid"`
-				IntroAttachments []ModuleContent `json:"introattachments"`
-			} `json:"assignments"`
+			Assignments []AssignmentInfo `json:"assignments"`
 		} `json:"courses"`
 	}
+
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("assignments: bad json: %w\n%s", err, string(body))
 	}
 
-	byModuleID := make(map[int][]ModuleContent)
+	byMoudleID := make(map[int]AssignmentInfo)
 	for _, course := range resp.Courses {
 		for _, a := range course.Assignments {
-			byModuleID[a.CMID] = a.IntroAttachments
+			byMoudleID[a.CMID] = a
 		}
 	}
 
-	return byModuleID, nil
+	return byMoudleID, nil
 }
 
 // DownloadFile fetches the raw content of a Moodle file URL (e.g. a
@@ -373,12 +380,16 @@ func (c *MoodleClient) DownloadFile(fileURL string) ([]byte, error) {
 
 const syntheticContentName = "index.html"
 
+func IsDownloadable(content ModuleContent) bool {
+	return content.FileURL != "" && content.FileName != syntheticContentName
+}
+
 func (s Section) GetFiles() []SectionFile {
 	var files []SectionFile
 
 	for _, mod := range s.Modules {
 		for _, content := range mod.Contents {
-			if content.FileURL == "" || content.FileName == syntheticContentName {
+			if !IsDownloadable(content) {
 				continue
 			}
 			files = append(files, SectionFile{
@@ -388,4 +399,75 @@ func (s Section) GetFiles() []SectionFile {
 		}
 	}
 	return files
+}
+
+type Submission struct {
+	ID            int    `json:"id"`
+	Status        string `json:"status"`
+	AttemptNumber int    `json:"attemptnumber"`
+	TimeModified  int64  `json:"timemodified"`
+	Plugins       []struct {
+		Type      string `json:"type"`
+		FileAreas []struct {
+			Area  string          `json:"area"`
+			Files []ModuleContent `json:"files"`
+		} `json:"fileareas"`
+	} `json:"plugins"`
+}
+
+func (s *Submission) Files() []ModuleContent {
+	var files []ModuleContent
+	for _, plugin := range s.Plugins {
+		if plugin.Type != "file" {
+			continue
+		}
+
+		for _, area := range plugin.FileAreas {
+			files = append(files, area.Files...)
+		}
+	}
+
+	return files
+}
+
+type LastAttempt struct {
+	Submission         *Submission `json:"submission"`
+	TeamSubmission     *Submission `json:"teamsubmission"`
+	SubmissionsEnabled bool        `json:"submissionsenabled"`
+	Locked             bool        `json:"locked"`
+	Graded             bool        `json:"graded"`
+	CanEdit            bool        `json:"canedit"`
+	CanSubmit          bool        `json:"cansubmit"`
+	ExtensionDueDate   *int64      `json:"extensionduedate"`
+	GradingStatus      string      `json:"gradingstatus"`
+}
+
+type Feedback struct {
+	Grade *struct {
+		Grade string `json:"grade"`
+	} `json:"grade"`
+	GradeForDisplay string `json:"gradefordisplay"`
+	GradeDate       int64  `json:"gradedate"`
+}
+
+type SubmissionStatus struct {
+	LastAttempt LastAttempt `json:"lastattempt"`
+	Feedback    *Feedback   `json:"feedback"`
+}
+
+func (c *MoodleClient) GetSubmissionStatus(assignID int) (*SubmissionStatus, error) {
+	params := url.Values{}
+	params.Set("assignid", strconv.Itoa(assignID))
+
+	body, err := c.call("mod_assign_get_submission_status", params)
+	if err != nil {
+		return nil, err
+	}
+
+	var status SubmissionStatus
+	if err := json.Unmarshal(body, &status); err != nil {
+		return nil, fmt.Errorf("submission status: bad json: %w\n%s", err, string(body))
+	}
+
+	return &status, nil
 }
