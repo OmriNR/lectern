@@ -20,6 +20,7 @@ const (
 	scrConnect
 	scrClone
 	scrCourses
+	scrAssignments
 	scrSync
 	scrConfig
 )
@@ -125,6 +126,8 @@ func (a app) newScreen(id screenID) screen {
 		return newCloneScreen(a.sess)
 	case scrCourses:
 		return newCourseScreen(a.sess)
+	case scrAssignments:
+		return newAssignmentScreen(a.sess)
 	case scrSync:
 		return newSyncScreen(a.sess)
 	case scrConfig:

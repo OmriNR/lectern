@@ -1,14 +1,17 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"lectern/core"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type assignmentState int
@@ -211,4 +214,194 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 
 func (m *assignmentScreen) Init() tea.Cmd {
 	return tea.Batch(loadAssignmentsCmd(m.sess.svc), m.spinner.Tick)
+}
+
+func (m *assignmentScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		return m.handlekey(msg)
+
+	case assignmentMenuMsg:
+		if !m.loading() {
+			return m, nil
+		}
+
+		m.assignments = msg.assignments
+
+		if m.assignments == nil {
+			m.assignments = []core.Assignment{}
+		}
+
+		m.cursor = 0
+		return m, nil
+
+	case assignmentMsg:
+		m.selectedAssignment = msg.assingment
+		m.state = assignmentPage
+		return m, nil
+
+	case assignmentSubmitMsg:
+		m.state = assignmentSubmit
+		return m, nil
+
+	case assignemntFailedMsg:
+		m.err = msg.err
+		m.state = assignmentFailed
+		return m, nil
+
+	case spinner.TickMsg:
+		if !m.loading() {
+			return m, nil
+		}
+
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
+	case courseOpenFailMsg:
+		if m.state == assignmentPage {
+			m.openErr = msg.err
+		}
+		return m, nil
+	}
+
+	return m, nil
+}
+
+func (m *assignmentScreen) View() string {
+	var body string
+	now := time.Now()
+
+	switch m.state {
+	case assignmentChoose:
+		if m.loading() {
+			body = strings.TrimSpace(m.spinner.View()) + " Loading your assignments..."
+			break
+		}
+
+		if len(m.assignments) == 0 {
+			body = titleStyle.Render("No assignments") + "\n" +
+				mutedStyle.Render("Your courses don't have any assignments yet.")
+			break
+		}
+
+		items := make([][2]string, len(m.assignments))
+
+		for i, a := range m.assignments {
+			detail := a.CourseName + " · " + dueLabel(a.DueDate(), now) + " · " + statusLabel(a, now)
+
+			if needsAttention(a, now) {
+				detail = accentStyle.Render("! ") + detail
+			}
+			items[i] = [2]string{a.Info.Name, detail}
+		}
+		body = titleStyle.Render("Your assignments") + "\n\n" + renderCursorList(items, m.cursor, m.sess)
+
+	case assignmentPage:
+		a := m.selectedAssignment
+		body = titleStyle.Render(a.Info.Name) + "\n" +
+			mutedStyle.Render(a.CourseName) + "\n\n" +
+			m.renderDetails(a, now)
+		if m.openErr != nil {
+			body += "\n\n" + accentStyle.Render("✗ ") + "couldn't open the folder: " + m.openErr.Error()
+		}
+
+	case assignmentSubmit:
+		body = titleStyle.Render("Submit") + "\n\n" +
+			mutedStyle.Render("SUbmitting isn't available yet.")
+
+	case assignmentFailed:
+		if errors.Is(m.err, core.ErrNoWorkspace) {
+			dir, _ := os.Getwd()
+			body = titleStyle.Render("Not a lectern workspace") + "\n\n" +
+				mutedStyle.Render(tildify(dir)+" isn't inside a cloned folder.") + "\n" +
+				"Run CLone to create one, or start lectern from isnide a workspace."
+		} else {
+			errText := lipgloss.NewStyle().Width(max(10, m.sess.width-4)).Render(m.err.Error())
+			body = accentStyle.Render("✗ ") + titleStyle.Render("Couldn't load your assignments") + "\n\n" + errText
+		}
+	}
+
+	return lipgloss.NewStyle().Padding(1, 2).Render(body)
+}
+
+func (m *assignmentScreen) renderDetails(a core.Assignment, now time.Time) string {
+	const dateFormat = "Mon 2 Jan 2006m 15:04"
+	labelStyle := mutedStyle.Width(12)
+
+	var rows [][2]string
+	add := func(label, value string) { rows = append(rows, [2]string{label, value}) }
+
+	status := statusLabel(a, now)
+	if needsAttention(a, now) {
+		status = accentStyle.Render(status)
+	}
+
+	add("Status", status)
+
+	if due := a.DueDate(); !due.IsZero() {
+		value := due.Format(dateFormat) + " " + mutedStyle.Render(dueLabel(due, now))
+		if ext := a.Status.LastAttempt.ExtensionDueDate; ext != nil && *ext > 0 {
+			value += mutedStyle.Render(" (extension)")
+		}
+		add("Due", value)
+	} else {
+		add("Due", mutedStyle.Render("no deadline"))
+	}
+
+	if cutoff := a.CutOffDate(); !cutoff.IsZero() {
+		add("Closes", cutoff.Format(dateFormat))
+	}
+
+	if opens := a.OpenAt(); !opens.IsZero() && now.Before(opens) {
+		add("Opens", opens.Format(dateFormat))
+	}
+
+	if sub := a.Submission(); sub != nil && sub.Status != "new" {
+		files := sub.Files()
+		names := make([]string, len(files))
+
+		for i, f := range files {
+			names[i] = f.FileName
+		}
+
+		value := filesLabel(len(files))
+		if len(names) > 0 {
+			value += mutedStyle.Render(" (" + truncate(strings.Join(names, ", "), max(10, m.sess.width-40)) + ")")
+		}
+		add("submitted", value)
+	}
+
+	if grade := a.Grade(); grade != "" {
+		add("Grade", grade)
+	} else if a.Status.LastAttempt.GradingStatus == "graded" {
+		add("Grade", mutedStyle.Render("graded, not released yet"))
+	}
+
+	if a.Path != "" {
+		add("Folder", tildify(a.Path))
+	} else {
+		add("Folder", mutedStyle.Render("not synced yet. Run Sync to download it."))
+	}
+
+	lines := make([]string, len(rows))
+	for i, r := range rows {
+		lines[i] = labelStyle.Render(r[0]) + r[1]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *assignmentScreen) ShortHelp() []key.Binding {
+	switch m.state {
+	case assignmentChoose:
+		return []key.Binding{assignmentKeyMove, assignmentKeyOpen, assignmentKeyBack}
+	case assignmentPage:
+		return []key.Binding{assignmentKeyFolder, assignmentKeySubmit, assignmentKeyBack}
+	case assignmentSubmit:
+		return []key.Binding{assignmentKeyBack}
+	case assignmentFailed:
+		return []key.Binding{assignmentKeyRetry, assignmentKeyMenu}
+	default:
+		return nil
+	}
 }

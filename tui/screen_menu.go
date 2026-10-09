@@ -32,7 +32,8 @@ func newMenuScreen(s *session) *menuScreen {
 	items := []list.Item{
 		connect,
 		menuItem{title: "Clone", desc: "Download all your courses", to: scrClone, needsLogin: true},
-		menuItem{title: "Courses", desc: "Manage your courses", to: scrCourses},
+		menuItem{title: "Courses", desc: "Manage your courses", to: scrCourses, needsLogin: true},
+		menuItem{title: "Assignments", desc: "Manage your assignments", to: scrAssignments, needsLogin: true},
 		menuItem{title: "Sync", desc: "Check new updates in coureses and sync them", to: scrSync, needsLogin: true},
 		menuItem{title: "Config", desc: "Show or clear your saved login", to: scrConfig},
 		menuItem{title: "Quit", desc: "Exit lectern", quit: true},
