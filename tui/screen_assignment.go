@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"lectern/core"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,25 +21,33 @@ const (
 	assignmentChoose assignmentState = iota
 	assignmentPage
 	assignmentSubmit
+	assignmentExported
 	assignmentFailed
 )
 
 type assignmentMenuMsg struct{ assignments []core.Assignment }
 type assignmentMsg struct{ assingment core.Assignment }
 type assignmentSubmitMsg struct{}
+type assignmentExportedMsg struct {
+	path   string
+	result core.SyncResult
+}
+type assignmentExportFailedMsg struct{ err error }
 type assignemntFailedMsg struct{ err error }
 
 var (
-	assignmentKeyMove   = key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑/↓", "move"))
-	assignmentKeyToggle = key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select"))
-	assignmentKeyAll    = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all"))
-	assignmentKeyUpdate = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "update"))
-	assignmentKeyMenu   = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "menu"))
-	assignmentKeyOpen   = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open"))
-	assignmentKeyRetry  = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "try again"))
-	assignmentKeyBack   = key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back"))
-	assignmentKeyFolder = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open folder"))
-	assignmentKeySubmit = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "submit"))
+	assignmentKeyMove     = key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑/↓", "move"))
+	assignmentKeyToggle   = key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select"))
+	assignmentKeyAll      = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all"))
+	assignmentKeyUpdate   = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "update"))
+	assignmentKeyMenu     = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "menu"))
+	assignmentKeyOpen     = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open"))
+	assignmentKeyRetry    = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "try again"))
+	assignmentKeyBack     = key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back"))
+	assignmentKeyFolder   = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open folder"))
+	assignmentKeySubmit   = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "submit"))
+	assignmentKeyExport   = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "export .ics"))
+	assignmentKeyCalendar = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "add to calendar"))
 )
 
 var (
@@ -57,6 +66,12 @@ type assignmentScreen struct {
 	cursor             int
 	openErr            error
 	err                error
+
+	selected     []bool
+	exportFrom   assignmentState
+	exportPath   string
+	exportResult core.SyncResult
+	exportErr    error
 }
 
 func newAssignmentScreen(s *session) *assignmentScreen {
@@ -81,6 +96,50 @@ func loadAssignmentsCmd(svc *core.Service) tea.Cmd {
 			assignments: assignments,
 		}
 	}
+}
+
+func exportAssignmentsCmd(svc *core.Service, assignments []core.Assignment) tea.Cmd {
+	return func() tea.Msg {
+		path, result, err := svc.ExportAssignments(assignments)
+		if err != nil {
+			return assignmentExportFailedMsg{err}
+		}
+		return assignmentExportedMsg{path: path, result: result}
+	}
+}
+
+func (m *assignmentScreen) toExport(now time.Time) []core.Assignment {
+	var picked []core.Assignment
+	for i, a := range m.assignments {
+		if m.selected[i] && a.IsSchedulable(now) {
+			picked = append(picked, a)
+		}
+	}
+
+	if len(picked) == 0 {
+		if a := m.assignments[m.cursor]; a.IsSchedulable(now) {
+			picked = append(picked, a)
+		}
+	}
+
+	return picked
+}
+
+func (m *assignmentScreen) startExport(assignments []core.Assignment) tea.Cmd {
+	if len(assignments) == 0 {
+		m.exportErr = errors.New("nothing to export: only upcoming, unsubmitted assignments can go on a calendar")
+		return nil
+	}
+	m.exportFrom = m.state
+	return exportAssignmentsCmd(m.sess.svc, assignments)
+}
+
+func assignmentsLabel(n int) string {
+	if n == 1 {
+		return "1 assignment"
+	}
+
+	return fmt.Sprintf("%d assignments", n)
 }
 
 func (m *assignmentScreen) loading() bool {
@@ -159,11 +218,13 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 
 	switch m.state {
 	case assignmentChoose:
+		m.exportErr = nil
+
 		if key == "esc" {
 			return m, goTo(scrMenu)
 		}
 
-		if m.loading() {
+		if m.loading() || len(m.assignments) == 0 {
 			return m, nil
 		}
 
@@ -171,13 +232,25 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 			return m, nil
 		}
 
-		if key == "enter" && len(m.assignments) > 0 {
+		now := time.Now()
+		switch key {
+		case "enter":
 			assignment := m.assignments[m.cursor]
 			return m, func() tea.Msg { return assignmentMsg{assingment: assignment} }
+		case " ":
+			if m.assignments[m.cursor].IsSchedulable(now) {
+				m.selected[m.cursor] = !m.selected[m.cursor]
+			}
+		case "a":
+			all := !slices.Contains(m.selected, true)
+			for i, a := range m.assignments {
+				m.selected[i] = all && a.IsSchedulable(now)
+			}
+		case "e":
+			return m, m.startExport(m.toExport(now))
 		}
-
 	case assignmentPage:
-		m.openErr = nil
+		m.openErr, m.exportErr = nil, nil
 
 		switch key {
 		case "esc":
@@ -191,6 +264,8 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 			return m, openFileCmd(m.selectedAssignment.Path)
 		case "s":
 			return m, func() tea.Msg { return assignmentSubmitMsg{} }
+		case "e":
+			return m, m.startExport([]core.Assignment{m.selectedAssignment})
 		}
 
 	case assignmentSubmit:
@@ -198,11 +273,20 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 			m.state = assignmentPage
 		}
 
+	case assignmentExported:
+		switch key {
+		case "enter":
+			m.openErr = nil
+			return m, openFileCmd(m.exportPath)
+		case "esc":
+			m.state, m.openErr = m.exportFrom, nil
+		}
+
 	case assignmentFailed:
 		switch key {
 		case "r":
 			m.state = assignmentChoose
-			m.assignments, m.err, m.cursor = nil, nil, 0
+			m.assignments, m.selected, m.err, m.cursor = nil, nil, nil, 0
 			return m, m.Init()
 		case "enter", "esc":
 			return m, goTo(scrMenu)
@@ -232,6 +316,7 @@ func (m *assignmentScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
 			m.assignments = []core.Assignment{}
 		}
 
+		m.selected = make([]bool, len(m.assignments))
 		m.cursor = 0
 		return m, nil
 
@@ -242,6 +327,16 @@ func (m *assignmentScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
 
 	case assignmentSubmitMsg:
 		m.state = assignmentSubmit
+		return m, nil
+
+	case assignmentExportedMsg:
+		m.exportPath, m.exportResult = msg.path, msg.result
+		m.state = assignmentExported
+		clear(m.selected)
+		return m, nil
+
+	case assignmentExportFailedMsg:
+		m.exportErr = msg.err
 		return m, nil
 
 	case assignemntFailedMsg:
@@ -259,7 +354,7 @@ func (m *assignmentScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
 		return m, cmd
 
 	case courseOpenFailMsg:
-		if m.state == assignmentPage {
+		if m.state == assignmentPage || m.state == assignmentExported {
 			m.openErr = msg.err
 		}
 		return m, nil
@@ -293,9 +388,20 @@ func (m *assignmentScreen) View() string {
 			if needsAttention(a, now) {
 				detail = accentStyle.Render("! ") + detail
 			}
-			items[i] = [2]string{a.Info.Name, detail}
+
+			box := "    "
+			if a.IsSchedulable(now) {
+				box = "[ ] "
+				if m.selected[i] {
+					box = "[✓] "
+				}
+			}
+			items[i] = [2]string{box + a.Info.Name, detail}
 		}
 		body = titleStyle.Render("Your assignments") + "\n\n" + renderCursorList(items, m.cursor, m.sess)
+		if m.exportErr != nil {
+			body += "\n\n" + accentStyle.Render("✗ ") + m.exportErr.Error()
+		}
 
 	case assignmentPage:
 		a := m.selectedAssignment
@@ -304,6 +410,19 @@ func (m *assignmentScreen) View() string {
 			m.renderDetails(a, now)
 		if m.openErr != nil {
 			body += "\n\n" + accentStyle.Render("✗ ") + "couldn't open the folder: " + m.openErr.Error()
+		}
+		if m.exportErr != nil {
+			body += "\n\n" + accentStyle.Render("✗ ") + m.exportErr.Error()
+		}
+
+	case assignmentExported:
+		r := m.exportResult
+		body = accentStyle.Render("✓ ") + titleStyle.Render("Exported "+assignmentsLabel(r.Added+r.Updated+r.Unchanged)) + "\n" +
+			mutedStyle.Render(tildify(m.exportPath)) + "\n\n" +
+			fmt.Sprintf("%d new · %d updated · %d unchanged", r.Added, r.Updated, r.Unchanged) + "\n\n" +
+			mutedStyle.Render("Press enter to open it in your calendar app, or import the file manually.")
+		if m.openErr != nil {
+			body += "\n\n" + accentStyle.Render("✗ ") + "couldn't open the file: " + m.openErr.Error()
 		}
 
 	case assignmentSubmit:
@@ -315,7 +434,7 @@ func (m *assignmentScreen) View() string {
 			dir, _ := os.Getwd()
 			body = titleStyle.Render("Not a lectern workspace") + "\n\n" +
 				mutedStyle.Render(tildify(dir)+" isn't inside a cloned folder.") + "\n" +
-				"Run CLone to create one, or start lectern from isnide a workspace."
+				"Run Clone to create one, or start lectern from inside a workspace."
 		} else {
 			errText := lipgloss.NewStyle().Width(max(10, m.sess.width-4)).Render(m.err.Error())
 			body = accentStyle.Render("✗ ") + titleStyle.Render("Couldn't load your assignments") + "\n\n" + errText
@@ -394,9 +513,11 @@ func (m *assignmentScreen) renderDetails(a core.Assignment, now time.Time) strin
 func (m *assignmentScreen) ShortHelp() []key.Binding {
 	switch m.state {
 	case assignmentChoose:
-		return []key.Binding{assignmentKeyMove, assignmentKeyOpen, assignmentKeyBack}
+		return []key.Binding{assignmentKeyMove, assignmentKeyOpen, assignmentKeyToggle, assignmentKeyAll, assignmentKeyExport, assignmentKeyBack}
 	case assignmentPage:
-		return []key.Binding{assignmentKeyFolder, assignmentKeySubmit, assignmentKeyBack}
+		return []key.Binding{assignmentKeyFolder, assignmentKeyExport, assignmentKeySubmit, assignmentKeyBack}
+	case assignmentExported:
+		return []key.Binding{assignmentKeyCalendar, assignmentKeyBack}
 	case assignmentSubmit:
 		return []key.Binding{assignmentKeyBack}
 	case assignmentFailed:
