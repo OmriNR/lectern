@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -344,4 +345,21 @@ func (s *Service) FetchAssignments(startDir string) ([]Assignment, error) {
 	})
 
 	return assignments, nil
+}
+
+func (s *Service) ExportAssignments(assignments []Assignment) (string, SyncResult, error) {
+	provider, err := NewDownloadsICSProvider()
+
+	if err != nil {
+		return "", SyncResult{}, err
+	}
+
+	events := AssignmentEvents(s.Host(), assignments, time.Now())
+	results, err := provider.Upsert(context.Background(), events)
+
+	if err != nil {
+		return "", SyncResult{}, err
+	}
+
+	return provider.Path, results, nil
 }

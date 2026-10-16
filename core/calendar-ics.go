@@ -16,6 +16,10 @@ import (
 
 const icsFileName = "assignments.ics"
 
+var (
+	DownloadDirNames []string = []string{"Downloads", "downloads", "download"}
+)
+
 type ICSProvider struct {
 	Path string
 }
@@ -27,6 +31,30 @@ func NewICSProvider() (*ICSProvider, error) {
 	}
 
 	return &ICSProvider{Path: filepath.Join(filepath.Dir(configPath), icsFileName)}, nil
+}
+
+func NewDownloadsICSProvider() (*ICSProvider, error) {
+	var downloadDir string
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, ddn := range DownloadDirNames {
+		var dir = filepath.Join(homeDir, ddn)
+
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			downloadDir = dir
+			break
+		}
+	}
+
+	if downloadDir == "" {
+		return nil, errors.New("couldn't find a Downloads folder")
+	}
+
+	return &ICSProvider{Path: filepath.Join(downloadDir, icsFileName)}, nil
 }
 
 func (p *ICSProvider) Name() string {
