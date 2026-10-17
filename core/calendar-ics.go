@@ -96,19 +96,28 @@ func (p *ICSProvider) Upsert(ctx context.Context, events []calendarEvent) (SyncR
 	return result, p.write(cal)
 }
 
-func (p *ICSProvider) Open() error {
+func openExternal(target string) error {
 	var cmd *exec.Cmd
 
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", p.Path)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll.FileProtocolHandler", p.Path)
+		cmd = exec.Command("open", target)
+	case "windowd":
+		cmd = exec.Command("rundll32", "url.dll.FileProtocolHandler", target)
 	default:
-		cmd = exec.Command("xdg-open", p.Path)
+		cmd = exec.Command("xdg-open", target)
 	}
 
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go cmd.Wait()
+
+	return nil
+}
+
+func (p *ICSProvider) Open() error {
+	return openExternal(p.Path)
 }
 
 func toICalEvent(ev calendarEvent, now time.Time) *ical.Event {
