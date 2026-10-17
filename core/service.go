@@ -363,3 +363,12 @@ func (s *Service) ExportAssignments(assignments []Assignment) (string, SyncResul
 
 	return provider.Path, results, nil
 }
+
+func (s *Service) AddToGoogleCalendar(assignments []Assignment) (int, error) {
+	provider := &GoogleLinkProvider{}
+
+	events := AssignmentEvents(s.Host(), assignments, time.Now())
+	result, err := provider.Upsert(context.Background(), events)
+
+	return result.Added, err
+}

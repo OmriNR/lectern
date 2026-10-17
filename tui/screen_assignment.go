@@ -32,6 +32,7 @@ type assignmentExportedMsg struct {
 	path   string
 	result core.SyncResult
 }
+type assignmentGoogleOpenedMsg struct{ opened int }
 type assignmentExportFailedMsg struct{ err error }
 type assignemntFailedMsg struct{ err error }
 
@@ -47,6 +48,7 @@ var (
 	assignmentKeyFolder   = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open folder"))
 	assignmentKeySubmit   = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "submit"))
 	assignmentKeyExport   = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "export .ics"))
+	assignmentKeyGoogle   = key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "google calendar"))
 	assignmentKeyCalendar = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "add to calendar"))
 )
 
@@ -71,6 +73,7 @@ type assignmentScreen struct {
 	exportFrom   assignmentState
 	exportPath   string
 	exportResult core.SyncResult
+	exportNotice string
 	exportErr    error
 }
 
@@ -108,6 +111,16 @@ func exportAssignmentsCmd(svc *core.Service, assignments []core.Assignment) tea.
 	}
 }
 
+func googleCalendarCmd(svc *core.Service, assignments []core.Assignment) tea.Cmd {
+	return func() tea.Msg {
+		n, err := svc.AddToGoogleCalendar(assignments)
+		if err != nil {
+			return assignmentExportFailedMsg{err}
+		}
+		return assignmentGoogleOpenedMsg{opened: n}
+	}
+}
+
 func (m *assignmentScreen) toExport(now time.Time) []core.Assignment {
 	var picked []core.Assignment
 	for i, a := range m.assignments {
@@ -125,13 +138,13 @@ func (m *assignmentScreen) toExport(now time.Time) []core.Assignment {
 	return picked
 }
 
-func (m *assignmentScreen) startExport(assignments []core.Assignment) tea.Cmd {
+func (m *assignmentScreen) startExport(assignments []core.Assignment, export func(*core.Service, []core.Assignment) tea.Cmd) tea.Cmd {
 	if len(assignments) == 0 {
 		m.exportErr = errors.New("nothing to export: only upcoming, unsubmitted assignments can go on a calendar")
 		return nil
 	}
 	m.exportFrom = m.state
-	return exportAssignmentsCmd(m.sess.svc, assignments)
+	return export(m.sess.svc, assignments)
 }
 
 func assignmentsLabel(n int) string {
@@ -218,7 +231,7 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 
 	switch m.state {
 	case assignmentChoose:
-		m.exportErr = nil
+		m.exportErr, m.exportNotice = nil, ""
 
 		if key == "esc" {
 			return m, goTo(scrMenu)
@@ -247,7 +260,9 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 				m.selected[i] = all && a.IsSchedulable(now)
 			}
 		case "e":
-			return m, m.startExport(m.toExport(now))
+			return m, m.startExport(m.toExport(now), exportAssignmentsCmd)
+		case "g":
+			return m, m.startExport(m.toExport(now), googleCalendarCmd)
 		}
 	case assignmentPage:
 		m.openErr, m.exportErr = nil, nil
@@ -265,7 +280,9 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 		case "s":
 			return m, func() tea.Msg { return assignmentSubmitMsg{} }
 		case "e":
-			return m, m.startExport([]core.Assignment{m.selectedAssignment})
+			return m, m.startExport([]core.Assignment{m.selectedAssignment}, exportAssignmentsCmd)
+		case "g":
+			return m, m.startExport([]core.Assignment{m.selectedAssignment}, googleCalendarCmd)
 		}
 
 	case assignmentSubmit:
@@ -344,6 +361,11 @@ func (m *assignmentScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
 		m.state = assignmentFailed
 		return m, nil
 
+	case assignmentGoogleOpenedMsg:
+		m.exportNotice = fmt.Sprintf("Opened %s in your browser. Press Save on each tab.", assignmentsLabel(msg.opened))
+		clear(m.selected)
+		return m, nil
+
 	case spinner.TickMsg:
 		if !m.loading() {
 			return m, nil
@@ -399,8 +421,13 @@ func (m *assignmentScreen) View() string {
 			items[i] = [2]string{box + a.Info.Name, detail}
 		}
 		body = titleStyle.Render("Your assignments") + "\n\n" + renderCursorList(items, m.cursor, m.sess)
+
 		if m.exportErr != nil {
 			body += "\n\n" + accentStyle.Render("✗ ") + m.exportErr.Error()
+		}
+
+		if m.exportNotice != "" {
+			body += "\n\n" + accentStyle.Render("✓ ") + m.exportNotice
 		}
 
 	case assignmentPage:
@@ -408,11 +435,17 @@ func (m *assignmentScreen) View() string {
 		body = titleStyle.Render(a.Info.Name) + "\n" +
 			mutedStyle.Render(a.CourseName) + "\n\n" +
 			m.renderDetails(a, now)
+
 		if m.openErr != nil {
 			body += "\n\n" + accentStyle.Render("✗ ") + "couldn't open the folder: " + m.openErr.Error()
 		}
+
 		if m.exportErr != nil {
 			body += "\n\n" + accentStyle.Render("✗ ") + m.exportErr.Error()
+		}
+
+		if m.exportNotice != "" {
+			body += "\n\n" + accentStyle.Render("✓ ") + m.exportNotice
 		}
 
 	case assignmentExported:
@@ -513,9 +546,9 @@ func (m *assignmentScreen) renderDetails(a core.Assignment, now time.Time) strin
 func (m *assignmentScreen) ShortHelp() []key.Binding {
 	switch m.state {
 	case assignmentChoose:
-		return []key.Binding{assignmentKeyMove, assignmentKeyOpen, assignmentKeyToggle, assignmentKeyAll, assignmentKeyExport, assignmentKeyBack}
+		return []key.Binding{assignmentKeyMove, assignmentKeyOpen, assignmentKeyToggle, assignmentKeyAll, assignmentKeyExport, assignmentKeyGoogle, assignmentKeyBack}
 	case assignmentPage:
-		return []key.Binding{assignmentKeyFolder, assignmentKeyExport, assignmentKeySubmit, assignmentKeyBack}
+		return []key.Binding{assignmentKeyFolder, assignmentKeyExport, assignmentKeyGoogle, assignmentKeySubmit, assignmentKeyBack}
 	case assignmentExported:
 		return []key.Binding{assignmentKeyCalendar, assignmentKeyBack}
 	case assignmentSubmit:
