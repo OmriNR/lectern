@@ -1,6 +1,10 @@
 package core
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 type AssignmentStatus int
 
@@ -113,6 +117,10 @@ func (a Assignment) Grade() string {
 	}
 
 	return a.Status.Feedback.GradeForDisplay
+}
+
+func (a Assignment) MoodleURL(host string) string {
+	return fmt.Sprintf("%s/mod/assign/view.php?id=%d", strings.TrimRight(host, "/"), a.Info.CMID)
 }
 
 func (a Assignment) State(now time.Time) AssignmentStatus {

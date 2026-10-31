@@ -315,7 +315,7 @@ type AssignmentInfo struct {
 	AllowSubmissionsFromDate int64           `json:"allowsubmissionsfromdate"`
 	NoSubmissions            int             `json:"nosubmissions"`
 	SubmissionsDrafts        int             `json:"submissionsdrafts"`
-	TeamSubmission           int             `json:"grade"`
+	TeamSubmission           int             `json:"teamsubmission"`
 	IntroAttachments         []ModuleContent `json:"introattachments"`
 }
 
