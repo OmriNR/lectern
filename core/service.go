@@ -385,3 +385,7 @@ func (s *Service) CourseURL(courseID int) string {
 func (s *Service) OpenCourseInMoodle(courseID int) error {
 	return openExternal(s.CourseURL(courseID))
 }
+
+func (s *Service) PickFileFromMachine(startDir string) (string, error) {
+	return PickFile(startDir)
+}

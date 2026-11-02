@@ -50,6 +50,7 @@ var (
 	assignmentKeyExport   = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "export .ics"))
 	assignmentKeyGoogle   = key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "google calendar"))
 	assignmentKeyCalendar = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "add to calendar"))
+	assignmentKeyMoodle   = key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open in moodle"))
 )
 
 var (
@@ -98,6 +99,15 @@ func loadAssignmentsCmd(svc *core.Service) tea.Cmd {
 		return assignmentMenuMsg{
 			assignments: assignments,
 		}
+	}
+}
+
+func openAssignmentInMoodleCmd(svc *core.Service, assignment core.Assignment) tea.Cmd {
+	return func() tea.Msg {
+		if err := svc.OpenInMoodle(assignment); err != nil {
+			return courseOpenFailMsg{err}
+		}
+		return nil
 	}
 }
 
@@ -283,6 +293,8 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 			return m, m.startExport([]core.Assignment{m.selectedAssignment}, exportAssignmentsCmd)
 		case "g":
 			return m, m.startExport([]core.Assignment{m.selectedAssignment}, googleCalendarCmd)
+		case "o":
+			return m, openAssignmentInMoodleCmd(m.sess.svc, m.selectedAssignment)
 		}
 
 	case assignmentSubmit:
@@ -437,7 +449,7 @@ func (m *assignmentScreen) View() string {
 			m.renderDetails(a, now)
 
 		if m.openErr != nil {
-			body += "\n\n" + accentStyle.Render("✗ ") + "couldn't open the folder: " + m.openErr.Error()
+			body += "\n\n" + accentStyle.Render("✗ ") + "couldn't open it: " + m.openErr.Error()
 		}
 
 		if m.exportErr != nil {
@@ -460,7 +472,7 @@ func (m *assignmentScreen) View() string {
 
 	case assignmentSubmit:
 		body = titleStyle.Render("Submit") + "\n\n" +
-			mutedStyle.Render("SUbmitting isn't available yet.")
+			mutedStyle.Render("Submitting isn't available yet.")
 
 	case assignmentFailed:
 		if errors.Is(m.err, core.ErrNoWorkspace) {
@@ -478,7 +490,7 @@ func (m *assignmentScreen) View() string {
 }
 
 func (m *assignmentScreen) renderDetails(a core.Assignment, now time.Time) string {
-	const dateFormat = "Mon 2 Jan 2006m 15:04"
+	const dateFormat = "Mon 2 Jan 2006 15:04"
 	labelStyle := mutedStyle.Width(12)
 
 	var rows [][2]string
@@ -536,6 +548,8 @@ func (m *assignmentScreen) renderDetails(a core.Assignment, now time.Time) strin
 		add("Folder", mutedStyle.Render("not synced yet. Run Sync to download it."))
 	}
 
+	add("Moodle", mutedStyle.Render(a.MoodleURL(m.sess.svc.Host())))
+
 	lines := make([]string, len(rows))
 	for i, r := range rows {
 		lines[i] = labelStyle.Render(r[0]) + r[1]
@@ -548,7 +562,7 @@ func (m *assignmentScreen) ShortHelp() []key.Binding {
 	case assignmentChoose:
 		return []key.Binding{assignmentKeyMove, assignmentKeyOpen, assignmentKeyToggle, assignmentKeyAll, assignmentKeyExport, assignmentKeyGoogle, assignmentKeyBack}
 	case assignmentPage:
-		return []key.Binding{assignmentKeyFolder, assignmentKeyExport, assignmentKeyGoogle, assignmentKeySubmit, assignmentKeyBack}
+		return []key.Binding{assignmentKeyFolder, assignmentKeyMoodle, assignmentKeyExport, assignmentKeyGoogle, assignmentKeySubmit, assignmentKeyBack}
 	case assignmentExported:
 		return []key.Binding{assignmentKeyCalendar, assignmentKeyBack}
 	case assignmentSubmit:
