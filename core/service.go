@@ -389,3 +389,9 @@ func (s *Service) OpenCourseInMoodle(courseID int) error {
 func (s *Service) PickFileFromMachine(startDir string) (string, error) {
 	return PickFile(startDir)
 }
+
+// WorkspaceRoot returns the lectern workspace containing startDir, or
+// ErrNoWorkspace if startDir isn't inside one.
+func (s *Service) WorkspaceRoot(startDir string) (string, error) {
+	return s.workspace.FindRoot(startDir)
+}

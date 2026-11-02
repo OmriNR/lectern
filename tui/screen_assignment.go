@@ -22,6 +22,7 @@ const (
 	assignmentChoose assignmentState = iota
 	assignmentPage
 	assignmentConfirm
+	assignmentUploading
 	assignmentExported
 	assignmentFailed
 )
@@ -37,6 +38,10 @@ type assignmentFilePickedMsg struct {
 	size int64
 }
 type assignmentPickCanceledMsg struct{}
+type assignmentUploadedMsg struct {
+	assignment core.Assignment
+	fileName   string
+}
 type assignmentGoogleOpenedMsg struct{ opened int }
 type assignmentExportFailedMsg struct{ err error }
 type assignemntFailedMsg struct{ err error }
@@ -142,6 +147,16 @@ func pickFileCmd(svc *core.Service, assignment core.Assignment) tea.Cmd {
 		}
 
 		return assignmentFilePickedMsg{path, size}
+	}
+}
+
+func uploadCmd(svc *core.Service, assignment core.Assignment, path string) tea.Cmd {
+	return func() tea.Msg {
+		updated, err := svc.UploadSubmission(assignment, path)
+		if err != nil {
+			return assignmentUploadFailedMsg{err}
+		}
+		return assignmentUploadedMsg{assignment: updated, fileName: filepath.Base(path)}
 	}
 }
 
@@ -350,10 +365,12 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 			m.uploadPath = ""
 			m.state = assignmentPage
 		case "enter":
-			m.uploadPath = ""
-			m.exportNotice = "Uploading comes in step 4"
-			m.state = assignmentPage
+			m.state = assignmentUploading
+			return m, tea.Batch(uploadCmd(m.sess.svc, m.selectedAssignment, m.uploadPath), m.spinner.Tick)
 		}
+
+	case assignmentUploading:
+		// Ignore keys: a half-finished upload can't be cancelled safely.
 
 	case assignmentExported:
 		switch key {
@@ -421,6 +438,20 @@ func (m *assignmentScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
 	case assignmentUploadFailedMsg:
 		m.picking = false
 		m.uploadErr = msg.err
+		if m.state == assignmentUploading {
+			m.state = assignmentPage
+			m.uploadPath = ""
+		}
+		return m, nil
+
+	case assignmentUploadedMsg:
+		m.selectedAssignment = msg.assignment
+		if i := m.assignmentIndex(msg.assignment.Info.ID); i < len(m.assignments) && m.assignments[i].Info.ID == msg.assignment.Info.ID {
+			m.assignments[i] = msg.assignment
+		}
+		m.uploadPath = ""
+		m.exportNotice = "Uploaded " + msg.fileName + ". It's saved as a draft."
+		m.state = assignmentPage
 		return m, nil
 
 	case assignmentExportedMsg:
@@ -444,7 +475,7 @@ func (m *assignmentScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if !m.loading() {
+		if !m.loading() && m.state != assignmentUploading {
 			return m, nil
 		}
 
@@ -522,7 +553,8 @@ func (m *assignmentScreen) View() string {
 		}
 
 		if m.uploadErr != nil {
-			body += "\n\n" + accentStyle.Render("✗ ") + m.uploadErr.Error()
+			body += "\n\n" + accentStyle.Render("✗ ") + m.uploadErr.Error() + "\n" +
+				mutedStyle.Render("  Press o to finish it in Moodle.")
 		}
 
 		if m.exportErr != nil {
@@ -545,6 +577,9 @@ func (m *assignmentScreen) View() string {
 
 	case assignmentConfirm:
 		body = titleStyle.Render("Upload and submit?") + "\n\n" + m.renderConfirm(m.selectedAssignment)
+
+	case assignmentUploading:
+		body = strings.TrimSpace(m.spinner.View()) + " Uploading " + filepath.Base(m.uploadPath) + "..."
 
 	case assignmentFailed:
 		if errors.Is(m.err, core.ErrNoWorkspace) {
