@@ -39,13 +39,11 @@ type courseOpenFailMsg struct{ err error }
 
 var (
 	courseKeyMove   = key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑/↓", "move"))
-	courseKeyToggle = key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select"))
-	courseKeyAll    = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all"))
-	courseKeyUpdate = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "update"))
 	courseKeyMenu   = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "menu"))
 	courseKeyOpen   = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open"))
 	courseKeyRetry  = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "try again"))
 	courseKeyBack   = key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back"))
+	courseKeyMoodle = key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open in moodle"))
 )
 
 var (
@@ -111,6 +109,15 @@ func openFileCmd(path string) tea.Cmd {
 	}
 }
 
+func openCourseInMoodleCmd(svc *core.Service, courseID int) tea.Cmd {
+	return func() tea.Msg {
+		if err := svc.OpenCourseInMoodle(courseID); err != nil {
+			return courseOpenFailMsg{err}
+		}
+		return nil
+	}
+}
+
 func (m *courseScreen) loading() bool {
 	return m.state == courseChooseMenu && m.courses == nil
 }
@@ -168,6 +175,8 @@ func (m *courseScreen) moveCursor(key string, n int) bool {
 func (m *courseScreen) handleKey(msg tea.KeyMsg) (screen, tea.Cmd) {
 	key := msg.String()
 
+	m.openErr = nil
+
 	switch m.state {
 	case courseChooseMenu:
 		if key == "esc" {
@@ -179,9 +188,15 @@ func (m *courseScreen) handleKey(msg tea.KeyMsg) (screen, tea.Cmd) {
 		if m.moveCursor(key, len(m.courses)) {
 			return m, nil
 		}
-		if key == "enter" && len(m.courses) > 0 {
+		if len(m.courses) == 0 {
+			return m, nil
+		}
+		switch key {
+		case "enter":
 			course := m.courses[m.cursor]
 			return m, func() tea.Msg { return courseMenuMsg{course} }
+		case "o":
+			return m, openCourseInMoodleCmd(m.sess.svc, m.courses[m.cursor].ID)
 		}
 
 	case courseMenu:
@@ -197,13 +212,14 @@ func (m *courseScreen) handleKey(msg tea.KeyMsg) (screen, tea.Cmd) {
 			}
 			section := sections[m.cursor]
 			return m, func() tea.Msg { return courseSectionMsg{section} }
+		case "o":
+			return m, openCourseInMoodleCmd(m.sess.svc, m.selectedCourse.ID)
 		default:
 			m.moveCursor(key, len(sections))
 		}
 
 	case courseSection:
 		files := m.files()
-		m.openErr = nil
 		switch key {
 		case "esc":
 			m.state = courseMenu
@@ -324,9 +340,7 @@ func (m *courseScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
 		return m, cmd
 
 	case courseOpenFailMsg:
-		if m.state == courseSection {
-			m.openErr = msg.err
-		}
+		m.openErr = msg.err
 		return m, nil
 	}
 
@@ -353,6 +367,9 @@ func (m *courseScreen) View() string {
 			items[i] = [2]string{c.DisplayName, c.ShortName}
 		}
 		body = titleStyle.Render("Choose a course") + "\n\n" + m.renderList(items)
+		if m.openErr != nil {
+			body += "\n\n" + accentStyle.Render("✗ ") + "Couldn't open Moodle: " + m.openErr.Error()
+		}
 
 	case courseMenu:
 		sections := m.sections()
@@ -361,11 +378,14 @@ func (m *courseScreen) View() string {
 			items[i] = [2]string{sectionTitle(s), filesLabel(len(s.Files))}
 		}
 		body = titleStyle.Render(m.selectedCourse.DisplayName) + "\n" +
-			mutedStyle.Render(m.selectedCourse.ShortName) + "\n\n"
+			mutedStyle.Render(m.selectedCourse.ShortName+" · "+m.sess.svc.CourseURL(m.selectedCourse.ID)) + "\n\n"
 		if len(items) == 0 {
 			body += mutedStyle.Render("This course has no sections.")
 		} else {
 			body += m.renderList(items)
+		}
+		if m.openErr != nil {
+			body += "\n\n" + accentStyle.Render("✗ ") + "Couldn't open Moodle: " + m.openErr.Error()
 		}
 
 	case courseSection:
@@ -407,7 +427,7 @@ func (m *courseScreen) View() string {
 func (m *courseScreen) ShortHelp() []key.Binding {
 	switch m.state {
 	case courseChooseMenu, courseMenu:
-		return []key.Binding{courseKeyMove, courseKeyToggle, courseKeyUpdate, courseKeyBack}
+		return []key.Binding{courseKeyMove, courseKeyOpen, courseKeyMoodle, courseKeyBack}
 	case courseSection:
 		return []key.Binding{courseKeyMove, courseKeyOpen, courseKeyBack}
 	case courseUpload:

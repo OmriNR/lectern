@@ -102,7 +102,7 @@ func openExternal(target string) error {
 	switch runtime.GOOS {
 	case "darwin":
 		cmd = exec.Command("open", target)
-	case "windowd":
+	case "windows":
 		cmd = exec.Command("rundll32", "url.dll.FileProtocolHandler", target)
 	default:
 		cmd = exec.Command("xdg-open", target)

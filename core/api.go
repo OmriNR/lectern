@@ -1,11 +1,16 @@
 package core
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +18,7 @@ import (
 
 const service = "moodle_mobile_app"
 const loginTimeout = 20 * time.Second
+const uploadTimeout = 2 * time.Minute
 
 type MoodleClient struct {
 	host  string
@@ -83,7 +89,7 @@ func (c *MoodleClient) requestToken(username, password string) (string, error) {
 	client := *c.http
 	client.Timeout = loginTimeout
 
-	resp, err := c.http.PostForm(c.host+"/login/token.php", url.Values{
+	resp, err := client.PostForm(c.host+"/login/token.php", url.Values{
 		"username": {username},
 		"password": {password},
 		"service":  {service},
@@ -307,16 +313,17 @@ func (c *MoodleClient) GetCourseSections(courseID int) ([]Section, error) {
 }
 
 type AssignmentInfo struct {
-	ID                       int             `json:"id"`
-	CMID                     int             `json:"cmid"`
-	Name                     string          `json:"name"`
-	DueDate                  int64           `json:"duedate"`
-	CutOffDate               int64           `json:"cutoffdate"`
-	AllowSubmissionsFromDate int64           `json:"allowsubmissionsfromdate"`
-	NoSubmissions            int             `json:"nosubmissions"`
-	SubmissionsDrafts        int             `json:"submissionsdrafts"`
-	TeamSubmission           int             `json:"grade"`
-	IntroAttachments         []ModuleContent `json:"introattachments"`
+	ID                         int             `json:"id"`
+	CMID                       int             `json:"cmid"`
+	Name                       string          `json:"name"`
+	DueDate                    int64           `json:"duedate"`
+	CutOffDate                 int64           `json:"cutoffdate"`
+	AllowSubmissionsFromDate   int64           `json:"allowsubmissionsfromdate"`
+	NoSubmissions              int             `json:"nosubmissions"`
+	SubmissionsDrafts          int             `json:"submissiondrafts"`
+	RequireSubmissionStatement int             `json:"requiresubmissionstatement"`
+	TeamSubmission             int             `json:"teamsubmission"`
+	IntroAttachments           []ModuleContent `json:"introattachments"`
 }
 
 func (c *MoodleClient) getAssignments(courseID int) (map[int]AssignmentInfo, error) {
@@ -470,4 +477,116 @@ func (c *MoodleClient) GetSubmissionStatus(assignID int) (*SubmissionStatus, err
 	}
 
 	return &status, nil
+}
+
+// UploadDraftFile uploads the file at path to the user's draft file area and
+// returns the draft item ID, which a save call (e.g. SaveFileSubmission) uses
+// to attach the file.
+func (c *MoodleClient) UploadDraftFile(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	w.WriteField("token", c.token)
+	w.WriteField("filearea", "draft")
+	w.WriteField("itemid", "0")
+
+	part, err := w.CreateFormFile("file_1", filepath.Base(path))
+	if err != nil {
+		return 0, err
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		return 0, err
+	}
+	if err := w.Close(); err != nil {
+		return 0, err
+	}
+
+	client := *c.http
+	client.Timeout = uploadTimeout
+
+	resp, err := client.Post(c.host+"/webservice/upload.php", w.FormDataContentType(), &body)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("reading upload response: %w", err)
+	}
+
+	// Success is a JSON array of the stored files; failure is an error object.
+	if len(data) > 0 && data[0] == '{' {
+		var e struct {
+			Error     string `json:"error"`
+			ErrorCode string `json:"errorcode"`
+		}
+		if json.Unmarshal(data, &e) == nil && e.Error != "" {
+			return 0, &moodleError{ErrorCode: e.ErrorCode, Message: e.Error}
+		}
+	}
+
+	var files []struct {
+		ItemID int `json:"itemid"`
+	}
+	if err := json.Unmarshal(data, &files); err != nil {
+		return 0, fmt.Errorf("bad upload response: %w\n%s", err, string(data))
+	}
+	if len(files) == 0 {
+		return 0, errors.New("empty upload response")
+	}
+
+	return files[0].ItemID, nil
+}
+
+// SaveFileSubmission replaces the files in the user's submission for
+// assignID with the files in the given draft area.
+func (c *MoodleClient) SaveFileSubmission(assignID, draftItemID int) error {
+	params := url.Values{}
+	params.Set("assignmentid", strconv.Itoa(assignID))
+	params.Set("plugindata[files_filemanager]", strconv.Itoa(draftItemID))
+
+	body, err := c.call("mod_assign_save_submission", params)
+	if err != nil {
+		return err
+	}
+
+	return checkWarnings("save submission", body)
+}
+
+// SubmitForGrading turns the user's draft submission for assignID into a
+// final one. It never accepts a submission statement on the user's behalf.
+func (c *MoodleClient) SubmitForGrading(assignID int) error {
+	params := url.Values{}
+	params.Set("assignmentid", strconv.Itoa(assignID))
+	params.Set("acceptsubmissionstatement", "0")
+
+	body, err := c.call("mod_assign_submit_for_grading", params)
+	if err != nil {
+		return err
+	}
+
+	return checkWarnings("submit for grading", body)
+}
+
+// checkWarnings reads a mod_assign response that reports failure as a list of
+// warnings (with HTTP 200) and returns the first warning as an error.
+func checkWarnings(fn string, body []byte) error {
+	var warnings []struct {
+		WarningCode string `json:"warningcode"`
+		Message     string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &warnings); err != nil {
+		return fmt.Errorf("%s: bad json: %w\n%s", fn, err, string(body))
+	}
+	if len(warnings) > 0 {
+		return errors.New(warnings[0].Message)
+	}
+
+	return nil
 }

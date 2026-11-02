@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"lectern/core"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -20,21 +21,31 @@ type assignmentState int
 const (
 	assignmentChoose assignmentState = iota
 	assignmentPage
-	assignmentSubmit
+	assignmentConfirm
+	assignmentUploading
 	assignmentExported
 	assignmentFailed
 )
 
 type assignmentMenuMsg struct{ assignments []core.Assignment }
 type assignmentMsg struct{ assingment core.Assignment }
-type assignmentSubmitMsg struct{}
 type assignmentExportedMsg struct {
 	path   string
 	result core.SyncResult
 }
+type assignmentFilePickedMsg struct {
+	path string
+	size int64
+}
+type assignmentPickCanceledMsg struct{}
+type assignmentUploadedMsg struct {
+	result   core.UploadResult
+	fileName string
+}
 type assignmentGoogleOpenedMsg struct{ opened int }
 type assignmentExportFailedMsg struct{ err error }
 type assignemntFailedMsg struct{ err error }
+type assignmentUploadFailedMsg struct{ err error }
 
 var (
 	assignmentKeyMove     = key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑/↓", "move"))
@@ -46,10 +57,12 @@ var (
 	assignmentKeyRetry    = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "try again"))
 	assignmentKeyBack     = key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back"))
 	assignmentKeyFolder   = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open folder"))
-	assignmentKeySubmit   = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "submit"))
 	assignmentKeyExport   = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "export .ics"))
 	assignmentKeyGoogle   = key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "google calendar"))
 	assignmentKeyCalendar = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "add to calendar"))
+	assignmentKeyMoodle   = key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open in moodle"))
+	assignmentKeyUpload   = key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "upload"))
+	assignmentKeyConfirm  = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "upload & submit"))
 )
 
 var (
@@ -75,6 +88,14 @@ type assignmentScreen struct {
 	exportResult core.SyncResult
 	exportNotice string
 	exportErr    error
+
+	picking    bool
+	uploadPath string
+	uploadErr  error
+	uploadSize int64
+	// uploadWarning is set when the file was saved but the user still has
+	// to finish the submission in Moodle.
+	uploadWarning string
 }
 
 func newAssignmentScreen(s *session) *assignmentScreen {
@@ -98,6 +119,47 @@ func loadAssignmentsCmd(svc *core.Service) tea.Cmd {
 		return assignmentMenuMsg{
 			assignments: assignments,
 		}
+	}
+}
+
+func openAssignmentInMoodleCmd(svc *core.Service, assignment core.Assignment) tea.Cmd {
+	return func() tea.Msg {
+		if err := svc.OpenInMoodle(assignment); err != nil {
+			return courseOpenFailMsg{err}
+		}
+		return nil
+	}
+}
+
+func pickFileCmd(svc *core.Service, assignment core.Assignment) tea.Cmd {
+	return func() tea.Msg {
+		path, err := svc.PickFileFromMachine(assignment.Path)
+
+		if errors.Is(err, core.ErrPickCanceled) {
+			return assignmentPickCanceledMsg{}
+		}
+
+		if err != nil {
+			return assignmentUploadFailedMsg{err}
+		}
+
+		size, err := core.CheckUploadFile(path)
+
+		if err != nil {
+			return assignmentUploadFailedMsg{err}
+		}
+
+		return assignmentFilePickedMsg{path, size}
+	}
+}
+
+func uploadCmd(svc *core.Service, assignment core.Assignment, path string) tea.Cmd {
+	return func() tea.Msg {
+		result, err := svc.UploadSubmission(assignment, path)
+		if err != nil {
+			return assignmentUploadFailedMsg{err}
+		}
+		return assignmentUploadedMsg{result: result, fileName: filepath.Base(path)}
 	}
 }
 
@@ -265,11 +327,12 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 			return m, m.startExport(m.toExport(now), googleCalendarCmd)
 		}
 	case assignmentPage:
-		m.openErr, m.exportErr = nil, nil
+		m.openErr, m.exportErr, m.uploadErr = nil, nil, nil
 
 		switch key {
 		case "esc":
 			m.state = assignmentChoose
+			m.uploadPath, m.uploadWarning, m.exportNotice = "", "", ""
 			m.cursor = m.assignmentIndex(m.selectedAssignment.Info.ID)
 			return m, nil
 		case "enter":
@@ -277,18 +340,41 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 				return m, nil
 			}
 			return m, openFileCmd(m.selectedAssignment.Path)
-		case "s":
-			return m, func() tea.Msg { return assignmentSubmitMsg{} }
 		case "e":
 			return m, m.startExport([]core.Assignment{m.selectedAssignment}, exportAssignmentsCmd)
 		case "g":
 			return m, m.startExport([]core.Assignment{m.selectedAssignment}, googleCalendarCmd)
+		case "o":
+			return m, openAssignmentInMoodleCmd(m.sess.svc, m.selectedAssignment)
+		case "u":
+			if m.picking {
+				return m, nil
+			}
+			if !m.selectedAssignment.Status.LastAttempt.SubmissionsEnabled {
+				m.uploadErr = errors.New("this assignment doesn't take submissions through Moodle")
+				return m, nil
+			}
+			if !m.selectedAssignment.Status.LastAttempt.CanEdit {
+				m.uploadErr = errors.New("this assignment can't be edited from here. Press o to open it in Moodle")
+				return m, nil
+			}
+			m.picking = true
+			return m, pickFileCmd(m.sess.svc, m.selectedAssignment)
 		}
 
-	case assignmentSubmit:
-		if key == "esc" {
+	case assignmentConfirm:
+		switch key {
+		case "esc":
+			m.uploadPath = ""
 			m.state = assignmentPage
+		case "enter":
+			m.state = assignmentUploading
+			m.uploadWarning, m.exportNotice = "", ""
+			return m, tea.Batch(uploadCmd(m.sess.svc, m.selectedAssignment, m.uploadPath), m.spinner.Tick)
 		}
+
+	case assignmentUploading:
+		// Ignore keys: a half-finished upload can't be cancelled safely.
 
 	case assignmentExported:
 		switch key {
@@ -342,8 +428,44 @@ func (m *assignmentScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
 		m.state = assignmentPage
 		return m, nil
 
-	case assignmentSubmitMsg:
-		m.state = assignmentSubmit
+	case assignmentFilePickedMsg:
+		m.picking = false
+		m.uploadPath = msg.path
+		m.uploadSize = msg.size
+		m.state = assignmentConfirm
+		return m, nil
+
+	case assignmentPickCanceledMsg:
+		m.picking = false
+		return m, nil
+
+	case assignmentUploadFailedMsg:
+		m.picking = false
+		m.uploadErr = msg.err
+		if m.state == assignmentUploading {
+			m.state = assignmentPage
+			m.uploadPath = ""
+		}
+		return m, nil
+
+	case assignmentUploadedMsg:
+		a := msg.result.Assignment
+		m.selectedAssignment = a
+		if i := m.assignmentIndex(a.Info.ID); i < len(m.assignments) && m.assignments[i].Info.ID == a.Info.ID {
+			m.assignments[i] = a
+		}
+
+		switch {
+		case msg.result.Submitted:
+			m.exportNotice = "Submitted " + msg.fileName + ". The assignment is closed."
+		case msg.result.NeedsMoodle != "":
+			m.uploadWarning = "Saved " + msg.fileName + " as a draft, but " + msg.result.NeedsMoodle + "."
+		default:
+			m.exportNotice = "Saved " + msg.fileName + " as a draft."
+		}
+
+		m.uploadPath = ""
+		m.state = assignmentPage
 		return m, nil
 
 	case assignmentExportedMsg:
@@ -367,7 +489,7 @@ func (m *assignmentScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if !m.loading() {
+		if !m.loading() && m.state != assignmentUploading {
 			return m, nil
 		}
 
@@ -437,7 +559,21 @@ func (m *assignmentScreen) View() string {
 			m.renderDetails(a, now)
 
 		if m.openErr != nil {
-			body += "\n\n" + accentStyle.Render("✗ ") + "couldn't open the folder: " + m.openErr.Error()
+			body += "\n\n" + accentStyle.Render("✗ ") + "couldn't open it: " + m.openErr.Error()
+		}
+
+		if m.picking {
+			body += "\n\n" + mutedStyle.Render("Waiting for the file chooser...")
+		}
+
+		if m.uploadErr != nil {
+			body += "\n\n" + accentStyle.Render("✗ ") + m.uploadErr.Error() + "\n" +
+				mutedStyle.Render("  Press o to finish it in Moodle.")
+		}
+
+		if m.uploadWarning != "" {
+			body += "\n\n" + accentStyle.Render("! ") + m.uploadWarning + "\n" +
+				mutedStyle.Render("  Press o to finish it in Moodle.")
 		}
 
 		if m.exportErr != nil {
@@ -458,9 +594,11 @@ func (m *assignmentScreen) View() string {
 			body += "\n\n" + accentStyle.Render("✗ ") + "couldn't open the file: " + m.openErr.Error()
 		}
 
-	case assignmentSubmit:
-		body = titleStyle.Render("Submit") + "\n\n" +
-			mutedStyle.Render("SUbmitting isn't available yet.")
+	case assignmentConfirm:
+		body = titleStyle.Render("Upload and submit?") + "\n\n" + m.renderConfirm(m.selectedAssignment)
+
+	case assignmentUploading:
+		body = strings.TrimSpace(m.spinner.View()) + " Uploading " + filepath.Base(m.uploadPath) + "..."
 
 	case assignmentFailed:
 		if errors.Is(m.err, core.ErrNoWorkspace) {
@@ -478,7 +616,7 @@ func (m *assignmentScreen) View() string {
 }
 
 func (m *assignmentScreen) renderDetails(a core.Assignment, now time.Time) string {
-	const dateFormat = "Mon 2 Jan 2006m 15:04"
+	const dateFormat = "Mon 2 Jan 2006 15:04"
 	labelStyle := mutedStyle.Width(12)
 
 	var rows [][2]string
@@ -536,10 +674,43 @@ func (m *assignmentScreen) renderDetails(a core.Assignment, now time.Time) strin
 		add("Folder", mutedStyle.Render("not synced yet. Run Sync to download it."))
 	}
 
+	add("Moodle", mutedStyle.Render(a.MoodleURL(m.sess.svc.Host())))
+
 	lines := make([]string, len(rows))
 	for i, r := range rows {
 		lines[i] = labelStyle.Render(r[0]) + r[1]
 	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *assignmentScreen) renderConfirm(a core.Assignment) string {
+	labelStyle := mutedStyle.Width(12)
+
+	lines := []string{
+		labelStyle.Render("File") + filepath.Base(m.uploadPath),
+		labelStyle.Render("Size") + core.HumanSize(m.uploadSize),
+		labelStyle.Render("Assignment") + a.Info.Name + mutedStyle.Render(" · "+a.CourseName),
+	}
+
+	if sub := a.Submission(); sub != nil {
+		if files := sub.Files(); len(files) > 0 {
+			names := make([]string, len(files))
+			for i, f := range files {
+				names[i] = f.FileName
+			}
+			warning := fmt.Sprintf("Replaces %s already submitted: %s", filesLabel(len(files)),
+				truncate(strings.Join(names, ", "), max(10, m.sess.width-50)))
+			lines = append(lines, labelStyle.Render("Note")+accentStyle.Render(warning))
+		}
+	}
+
+	switch {
+	case a.Info.RequireSubmissionStatement == 1:
+		lines = append(lines, "", mutedStyle.Render("You'll need to accept the submission statement in Moodle to finish."))
+	case a.Info.SubmissionsDrafts == 1:
+		lines = append(lines, "", mutedStyle.Render("Submitting closes the assignment. You can't change it afterwards unless your lecturer reopens it."))
+	}
+
 	return strings.Join(lines, "\n")
 }
 
@@ -548,11 +719,11 @@ func (m *assignmentScreen) ShortHelp() []key.Binding {
 	case assignmentChoose:
 		return []key.Binding{assignmentKeyMove, assignmentKeyOpen, assignmentKeyToggle, assignmentKeyAll, assignmentKeyExport, assignmentKeyGoogle, assignmentKeyBack}
 	case assignmentPage:
-		return []key.Binding{assignmentKeyFolder, assignmentKeyExport, assignmentKeyGoogle, assignmentKeySubmit, assignmentKeyBack}
+		return []key.Binding{assignmentKeyFolder, assignmentKeyMoodle, assignmentKeyUpload, assignmentKeyExport, assignmentKeyGoogle, assignmentKeyBack}
 	case assignmentExported:
 		return []key.Binding{assignmentKeyCalendar, assignmentKeyBack}
-	case assignmentSubmit:
-		return []key.Binding{assignmentKeyBack}
+	case assignmentConfirm:
+		return []key.Binding{assignmentKeyConfirm, assignmentKeyBack}
 	case assignmentFailed:
 		return []key.Binding{assignmentKeyRetry, assignmentKeyMenu}
 	default:

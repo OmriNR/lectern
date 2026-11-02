@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -371,6 +372,22 @@ func (s *Service) AddToGoogleCalendar(assignments []Assignment) (int, error) {
 	result, err := provider.Upsert(context.Background(), events)
 
 	return result.Added, err
+}
+
+func (s *Service) OpenInMoodle(a Assignment) error {
+	return openExternal(a.MoodleURL(s.Host()))
+}
+
+func (s *Service) CourseURL(courseID int) string {
+	return fmt.Sprintf("%s/course/view.php?id=%d", strings.TrimRight(s.Host(), "/"), courseID)
+}
+
+func (s *Service) OpenCourseInMoodle(courseID int) error {
+	return openExternal(s.CourseURL(courseID))
+}
+
+func (s *Service) PickFileFromMachine(startDir string) (string, error) {
+	return PickFile(startDir)
 }
 
 // WorkspaceRoot returns the lectern workspace containing startDir, or
