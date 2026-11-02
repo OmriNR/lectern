@@ -39,8 +39,8 @@ type assignmentFilePickedMsg struct {
 }
 type assignmentPickCanceledMsg struct{}
 type assignmentUploadedMsg struct {
-	assignment core.Assignment
-	fileName   string
+	result   core.UploadResult
+	fileName string
 }
 type assignmentGoogleOpenedMsg struct{ opened int }
 type assignmentExportFailedMsg struct{ err error }
@@ -93,6 +93,9 @@ type assignmentScreen struct {
 	uploadPath string
 	uploadErr  error
 	uploadSize int64
+	// uploadWarning is set when the file was saved but the user still has
+	// to finish the submission in Moodle.
+	uploadWarning string
 }
 
 func newAssignmentScreen(s *session) *assignmentScreen {
@@ -152,11 +155,11 @@ func pickFileCmd(svc *core.Service, assignment core.Assignment) tea.Cmd {
 
 func uploadCmd(svc *core.Service, assignment core.Assignment, path string) tea.Cmd {
 	return func() tea.Msg {
-		updated, err := svc.UploadSubmission(assignment, path)
+		result, err := svc.UploadSubmission(assignment, path)
 		if err != nil {
 			return assignmentUploadFailedMsg{err}
 		}
-		return assignmentUploadedMsg{assignment: updated, fileName: filepath.Base(path)}
+		return assignmentUploadedMsg{result: result, fileName: filepath.Base(path)}
 	}
 }
 
@@ -329,7 +332,7 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 		switch key {
 		case "esc":
 			m.state = assignmentChoose
-			m.uploadPath = ""
+			m.uploadPath, m.uploadWarning, m.exportNotice = "", "", ""
 			m.cursor = m.assignmentIndex(m.selectedAssignment.Info.ID)
 			return m, nil
 		case "enter":
@@ -366,6 +369,7 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 			m.state = assignmentPage
 		case "enter":
 			m.state = assignmentUploading
+			m.uploadWarning, m.exportNotice = "", ""
 			return m, tea.Batch(uploadCmd(m.sess.svc, m.selectedAssignment, m.uploadPath), m.spinner.Tick)
 		}
 
@@ -445,12 +449,22 @@ func (m *assignmentScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
 		return m, nil
 
 	case assignmentUploadedMsg:
-		m.selectedAssignment = msg.assignment
-		if i := m.assignmentIndex(msg.assignment.Info.ID); i < len(m.assignments) && m.assignments[i].Info.ID == msg.assignment.Info.ID {
-			m.assignments[i] = msg.assignment
+		a := msg.result.Assignment
+		m.selectedAssignment = a
+		if i := m.assignmentIndex(a.Info.ID); i < len(m.assignments) && m.assignments[i].Info.ID == a.Info.ID {
+			m.assignments[i] = a
 		}
+
+		switch {
+		case msg.result.Submitted:
+			m.exportNotice = "Submitted " + msg.fileName + ". The assignment is closed."
+		case msg.result.NeedsMoodle != "":
+			m.uploadWarning = "Saved " + msg.fileName + " as a draft, but " + msg.result.NeedsMoodle + "."
+		default:
+			m.exportNotice = "Saved " + msg.fileName + " as a draft."
+		}
+
 		m.uploadPath = ""
-		m.exportNotice = "Uploaded " + msg.fileName + ". It's saved as a draft."
 		m.state = assignmentPage
 		return m, nil
 
@@ -554,6 +568,11 @@ func (m *assignmentScreen) View() string {
 
 		if m.uploadErr != nil {
 			body += "\n\n" + accentStyle.Render("✗ ") + m.uploadErr.Error() + "\n" +
+				mutedStyle.Render("  Press o to finish it in Moodle.")
+		}
+
+		if m.uploadWarning != "" {
+			body += "\n\n" + accentStyle.Render("! ") + m.uploadWarning + "\n" +
 				mutedStyle.Render("  Press o to finish it in Moodle.")
 		}
 
@@ -685,7 +704,10 @@ func (m *assignmentScreen) renderConfirm(a core.Assignment) string {
 		}
 	}
 
-	if a.Info.SubmissionsDrafts == 1 {
+	switch {
+	case a.Info.RequireSubmissionStatement == 1:
+		lines = append(lines, "", mutedStyle.Render("You'll need to accept the submission statement in Moodle to finish."))
+	case a.Info.SubmissionsDrafts == 1:
 		lines = append(lines, "", mutedStyle.Render("Submitting closes the assignment. You can't change it afterwards unless your lecturer reopens it."))
 	}
 

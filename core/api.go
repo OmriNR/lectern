@@ -313,16 +313,17 @@ func (c *MoodleClient) GetCourseSections(courseID int) ([]Section, error) {
 }
 
 type AssignmentInfo struct {
-	ID                       int             `json:"id"`
-	CMID                     int             `json:"cmid"`
-	Name                     string          `json:"name"`
-	DueDate                  int64           `json:"duedate"`
-	CutOffDate               int64           `json:"cutoffdate"`
-	AllowSubmissionsFromDate int64           `json:"allowsubmissionsfromdate"`
-	NoSubmissions            int             `json:"nosubmissions"`
-	SubmissionsDrafts        int             `json:"submissionsdrafts"`
-	TeamSubmission           int             `json:"teamsubmission"`
-	IntroAttachments         []ModuleContent `json:"introattachments"`
+	ID                         int             `json:"id"`
+	CMID                       int             `json:"cmid"`
+	Name                       string          `json:"name"`
+	DueDate                    int64           `json:"duedate"`
+	CutOffDate                 int64           `json:"cutoffdate"`
+	AllowSubmissionsFromDate   int64           `json:"allowsubmissionsfromdate"`
+	NoSubmissions              int             `json:"nosubmissions"`
+	SubmissionsDrafts          int             `json:"submissiondrafts"`
+	RequireSubmissionStatement int             `json:"requiresubmissionstatement"`
+	TeamSubmission             int             `json:"teamsubmission"`
+	IntroAttachments           []ModuleContent `json:"introattachments"`
 }
 
 func (c *MoodleClient) getAssignments(courseID int) (map[int]AssignmentInfo, error) {
@@ -555,13 +556,33 @@ func (c *MoodleClient) SaveFileSubmission(assignID, draftItemID int) error {
 		return err
 	}
 
-	// A failed save still returns 200, with the reason in a warnings list.
+	return checkWarnings("save submission", body)
+}
+
+// SubmitForGrading turns the user's draft submission for assignID into a
+// final one. It never accepts a submission statement on the user's behalf.
+func (c *MoodleClient) SubmitForGrading(assignID int) error {
+	params := url.Values{}
+	params.Set("assignmentid", strconv.Itoa(assignID))
+	params.Set("acceptsubmissionstatement", "0")
+
+	body, err := c.call("mod_assign_submit_for_grading", params)
+	if err != nil {
+		return err
+	}
+
+	return checkWarnings("submit for grading", body)
+}
+
+// checkWarnings reads a mod_assign response that reports failure as a list of
+// warnings (with HTTP 200) and returns the first warning as an error.
+func checkWarnings(fn string, body []byte) error {
 	var warnings []struct {
 		WarningCode string `json:"warningcode"`
 		Message     string `json:"message"`
 	}
 	if err := json.Unmarshal(body, &warnings); err != nil {
-		return fmt.Errorf("save submission: bad json: %w\n%s", err, string(body))
+		return fmt.Errorf("%s: bad json: %w\n%s", fn, err, string(body))
 	}
 	if len(warnings) > 0 {
 		return errors.New(warnings[0].Message)
