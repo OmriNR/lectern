@@ -198,7 +198,7 @@ func filesLabel(n int) string {
 	case 0:
 		return "no files"
 	case 1:
-		return "1 files"
+		return "1 file"
 	default:
 		return fmt.Sprintf("%d files", n)
 	}

@@ -21,6 +21,17 @@ func HumanAgo(t time.Time) string {
 	}
 }
 
+func HumanSize(bytes int64) string {
+	switch {
+	case bytes < 1024:
+		return fmt.Sprintf("%d B", bytes)
+	case bytes < 1024*1024:
+		return fmt.Sprintf("%d KB", bytes/1024)
+	default:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/(1024*1024))
+	}
+}
+
 func HumanDuration(d time.Duration) string {
 	switch {
 	case d < time.Hour:
