@@ -372,3 +372,9 @@ func (s *Service) AddToGoogleCalendar(assignments []Assignment) (int, error) {
 
 	return result.Added, err
 }
+
+// WorkspaceRoot returns the lectern workspace containing startDir, or
+// ErrNoWorkspace if startDir isn't inside one.
+func (s *Service) WorkspaceRoot(startDir string) (string, error) {
+	return s.workspace.FindRoot(startDir)
+}
