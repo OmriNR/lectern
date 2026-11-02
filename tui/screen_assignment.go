@@ -32,9 +32,12 @@ type assignmentExportedMsg struct {
 	path   string
 	result core.SyncResult
 }
+type assignmentFilePickedMsg struct{ path string }
+type assignmentPickCanceledMsg struct{}
 type assignmentGoogleOpenedMsg struct{ opened int }
 type assignmentExportFailedMsg struct{ err error }
 type assignemntFailedMsg struct{ err error }
+type assignmentUploadFailedMsg struct{ err error }
 
 var (
 	assignmentKeyMove     = key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑/↓", "move"))
@@ -51,6 +54,7 @@ var (
 	assignmentKeyGoogle   = key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "google calendar"))
 	assignmentKeyCalendar = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "add to calendar"))
 	assignmentKeyMoodle   = key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open in moodle"))
+	assignmentKeyUpload   = key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "upload"))
 )
 
 var (
@@ -76,6 +80,10 @@ type assignmentScreen struct {
 	exportResult core.SyncResult
 	exportNotice string
 	exportErr    error
+
+	picking    bool
+	uploadPath string
+	uploadErr  error
 }
 
 func newAssignmentScreen(s *session) *assignmentScreen {
@@ -108,6 +116,22 @@ func openAssignmentInMoodleCmd(svc *core.Service, assignment core.Assignment) te
 			return courseOpenFailMsg{err}
 		}
 		return nil
+	}
+}
+
+func pickFileCmd(svc *core.Service, assignment core.Assignment) tea.Cmd {
+	return func() tea.Msg {
+		filepath, err := svc.PickFileFromMachine(assignment.Path)
+
+		if errors.Is(err, core.ErrPickCanceled) {
+			return assignmentPickCanceledMsg{}
+		}
+
+		if err != nil {
+			return assignmentUploadFailedMsg{err}
+		}
+
+		return assignmentFilePickedMsg{filepath}
 	}
 }
 
@@ -275,11 +299,12 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 			return m, m.startExport(m.toExport(now), googleCalendarCmd)
 		}
 	case assignmentPage:
-		m.openErr, m.exportErr = nil, nil
+		m.openErr, m.exportErr, m.uploadErr = nil, nil, nil
 
 		switch key {
 		case "esc":
 			m.state = assignmentChoose
+			m.uploadPath = ""
 			m.cursor = m.assignmentIndex(m.selectedAssignment.Info.ID)
 			return m, nil
 		case "enter":
@@ -295,6 +320,16 @@ func (m *assignmentScreen) handlekey(msg tea.KeyMsg) (screen, tea.Cmd) {
 			return m, m.startExport([]core.Assignment{m.selectedAssignment}, googleCalendarCmd)
 		case "o":
 			return m, openAssignmentInMoodleCmd(m.sess.svc, m.selectedAssignment)
+		case "u":
+			if m.picking {
+				return m, nil
+			}
+			if !m.selectedAssignment.Status.LastAttempt.CanEdit {
+				m.uploadErr = errors.New("this assignment can't be edited from here. Press o to open it in Moodle")
+				return m, nil
+			}
+			m.picking = true
+			return m, pickFileCmd(m.sess.svc, m.selectedAssignment)
 		}
 
 	case assignmentSubmit:
@@ -352,6 +387,20 @@ func (m *assignmentScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
 	case assignmentMsg:
 		m.selectedAssignment = msg.assingment
 		m.state = assignmentPage
+		return m, nil
+
+	case assignmentFilePickedMsg:
+		m.picking = false
+		m.uploadPath = msg.path
+		return m, nil
+
+	case assignmentPickCanceledMsg:
+		m.picking = false
+		return m, nil
+
+	case assignmentUploadFailedMsg:
+		m.picking = false
+		m.uploadErr = msg.err
 		return m, nil
 
 	case assignmentSubmitMsg:
@@ -450,6 +499,18 @@ func (m *assignmentScreen) View() string {
 
 		if m.openErr != nil {
 			body += "\n\n" + accentStyle.Render("✗ ") + "couldn't open it: " + m.openErr.Error()
+		}
+
+		if m.picking {
+			body += "\n\n" + mutedStyle.Render("Waiting for the file chooser...")
+		}
+
+		if m.uploadErr != nil {
+			body += "\n\n" + accentStyle.Render("✗ ") + m.uploadErr.Error()
+		}
+
+		if m.uploadPath != "" {
+			body += "\n\n" + "Picked: " + tildify(m.uploadPath)
 		}
 
 		if m.exportErr != nil {
@@ -562,7 +623,7 @@ func (m *assignmentScreen) ShortHelp() []key.Binding {
 	case assignmentChoose:
 		return []key.Binding{assignmentKeyMove, assignmentKeyOpen, assignmentKeyToggle, assignmentKeyAll, assignmentKeyExport, assignmentKeyGoogle, assignmentKeyBack}
 	case assignmentPage:
-		return []key.Binding{assignmentKeyFolder, assignmentKeyMoodle, assignmentKeyExport, assignmentKeyGoogle, assignmentKeySubmit, assignmentKeyBack}
+		return []key.Binding{assignmentKeyFolder, assignmentKeyMoodle, assignmentKeyUpload, assignmentKeyExport, assignmentKeyGoogle, assignmentKeySubmit, assignmentKeyBack}
 	case assignmentExported:
 		return []key.Binding{assignmentKeyCalendar, assignmentKeyBack}
 	case assignmentSubmit:
